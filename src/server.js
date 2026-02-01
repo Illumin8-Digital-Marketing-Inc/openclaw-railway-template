@@ -954,10 +954,22 @@ app.use(async (req, res) => {
 });
 
 // Create HTTP server from Express app
-const server = app.listen(PORT, () => {
+const server = app.listen(PORT, async () => {
   console.log(`[wrapper] listening on port ${PORT}`);
   console.log(`[wrapper] setup wizard: http://localhost:${PORT}/setup`);
   console.log(`[wrapper] configured: ${isConfigured()}`);
+
+  // Auto-start the gateway so Telegram/Discord polling begins immediately
+  // instead of waiting for the first inbound HTTP request.
+  if (isConfigured()) {
+    console.log(`[wrapper] auto-starting gateway...`);
+    try {
+      await ensureGatewayRunning();
+      console.log(`[wrapper] gateway auto-started successfully`);
+    } catch (err) {
+      console.error(`[wrapper] gateway auto-start failed: ${err.message}`);
+    }
+  }
 });
 
 // Handle WebSocket upgrades
