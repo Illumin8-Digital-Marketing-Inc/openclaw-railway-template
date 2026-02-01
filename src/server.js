@@ -74,6 +74,11 @@ const SITE_DIR = path.join(WORKSPACE_DIR, 'site');
 const PRODUCTION_DIR = path.join(SITE_DIR, 'production');
 const DEV_DIR = path.join(SITE_DIR, 'dev');
 
+// Gerald Dashboard
+const DASHBOARD_PORT = 3003;
+const DASHBOARD_TARGET = `http://127.0.0.1:${DASHBOARD_PORT}`;
+const DASHBOARD_DIR = path.join(STATE_DIR || '/data', 'dashboard');
+
 // Read CLIENT_DOMAIN from env or from a persisted config file
 function getClientDomain() {
   const envDomain = process.env.CLIENT_DOMAIN?.trim();
@@ -850,6 +855,89 @@ async function cloneAndBuild(repoUrl, branch, targetDir, token) {
   return { ok: true, output: `Cloned static site from ${branch} branch` };
 }
 
+// ── Gerald Dashboard setup & lifecycle ────────────────────────────────
+async function setupDashboard(token) {
+  const dashboardRepo = 'https://github.com/illumin8ca/gerald-dashboard';
+  const authUrl = token
+    ? dashboardRepo.replace('https://', `https://x-access-token:${token}@`)
+    : dashboardRepo;
+
+  console.log('[dashboard] Cloning Gerald Dashboard...');
+
+  // Clone if not already present
+  if (!fs.existsSync(path.join(DASHBOARD_DIR, 'package.json'))) {
+    fs.rmSync(DASHBOARD_DIR, { recursive: true, force: true });
+    fs.mkdirSync(DASHBOARD_DIR, { recursive: true });
+    const clone = await runCmd('git', ['clone', '--depth', '1', authUrl, DASHBOARD_DIR]);
+    if (clone.code !== 0) {
+      console.error('[dashboard] Clone failed:', clone.output);
+      return { ok: false, output: clone.output };
+    }
+  }
+
+  // Install deps
+  console.log('[dashboard] Installing dependencies...');
+  const install = await runCmd('npm', ['install', '--production=false'], { cwd: DASHBOARD_DIR });
+  if (install.code !== 0) {
+    console.error('[dashboard] Install failed:', install.output);
+    return { ok: false, output: install.output };
+  }
+
+  // Build frontend
+  console.log('[dashboard] Building frontend...');
+  const build = await runCmd('npm', ['run', 'build'], { cwd: DASHBOARD_DIR });
+  if (build.code !== 0) {
+    console.error('[dashboard] Build failed:', build.output);
+    return { ok: false, output: build.output };
+  }
+
+  return { ok: true, output: 'Dashboard installed and built' };
+}
+
+let dashboardProcess = null;
+
+async function startDashboard() {
+  if (dashboardProcess) return;
+
+  if (!fs.existsSync(path.join(DASHBOARD_DIR, 'package.json'))) {
+    console.log('[dashboard] Not installed, skipping start');
+    return;
+  }
+
+  console.log('[dashboard] Starting on port ' + DASHBOARD_PORT);
+  dashboardProcess = childProcess.spawn('node', ['server/index.js'], {
+    cwd: DASHBOARD_DIR,
+    env: {
+      ...process.env,
+      PORT: String(DASHBOARD_PORT),
+      NODE_ENV: 'production',
+      OPENCLAW_GATEWAY_URL: GATEWAY_TARGET,
+      OPENCLAW_GATEWAY_TOKEN: OPENCLAW_GATEWAY_TOKEN,
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+
+  dashboardProcess.stdout.on('data', (d) => console.log('[dashboard]', d.toString().trim()));
+  dashboardProcess.stderr.on('data', (d) => console.error('[dashboard]', d.toString().trim()));
+  dashboardProcess.on('close', (code) => {
+    console.log('[dashboard] Process exited with code', code);
+    dashboardProcess = null;
+  });
+
+  // Wait for it to be ready
+  for (let i = 0; i < 30; i++) {
+    await new Promise(r => setTimeout(r, 1000));
+    try {
+      const res = await fetch(`http://127.0.0.1:${DASHBOARD_PORT}/api/health`);
+      if (res.ok) {
+        console.log('[dashboard] Ready');
+        return;
+      }
+    } catch {}
+  }
+  console.error('[dashboard] Failed to start within 30s');
+}
+
 app.post("/setup/api/run", requireSetupAuth, async (req, res) => {
   try {
     if (isConfigured()) {
@@ -970,14 +1058,10 @@ app.post("/setup/api/run", requireSetupAuth, async (req, res) => {
           String(INTERNAL_GATEWAY_PORT),
         ]),
       );
-      // Enable Control UI with insecure auth (web chat needs it) and trust the local proxy
+      // Disable OpenClaw Control UI (Gerald Dashboard replaces it)
       await runCmd(
         OPENCLAW_NODE,
-        clawArgs(["config", "set", "gateway.controlUi.enabled", "true"]),
-      );
-      await runCmd(
-        OPENCLAW_NODE,
-        clawArgs(["config", "set", "gateway.controlUi.allowInsecureAuth", "true"]),
+        clawArgs(["config", "set", "gateway.controlUi.enabled", "false"]),
       );
       await runCmd(
         OPENCLAW_NODE,
@@ -1245,6 +1329,12 @@ app.post("/setup/api/run", requireSetupAuth, async (req, res) => {
         extra += `[build] Dev: ${devResult.output}\n`;
       }
 
+      // ── Clone and set up Gerald Dashboard ──────────────────────────────
+      extra += '\n[dashboard] Setting up Gerald Dashboard...\n';
+      const githubToken = payload.githubToken?.trim() || process.env.GITHUB_TOKEN?.trim() || '';
+      const dashResult = await setupDashboard(githubToken);
+      extra += `[dashboard] ${dashResult.output}\n`;
+
       // ── Default model configuration ──────────────────────────────────────
       if (process.env.DEFAULT_MODEL?.trim()) {
         await runCmd(OPENCLAW_NODE, clawArgs([
@@ -1497,8 +1587,22 @@ app.use(async (req, res) => {
       return serveStaticSite(DEV_DIR, req, res);
     }
 
-    // Gerald chat: gerald.clientdomain.com → falls through to proxy
-    // All other hosts also fall through to proxy (setup, healthz, etc.)
+    // Gerald dashboard: gerald.clientdomain.com → Dashboard (except /openclaw → gateway)
+    if (host === `gerald.${clientDomain}`) {
+      if (req.path.startsWith('/openclaw')) {
+        // Proxy /openclaw paths to OpenClaw gateway (dashboard API calls)
+        if (isConfigured()) {
+          try { await ensureGatewayRunning(); } catch (err) {
+            return res.status(503).type('text/plain').send(`Gateway not ready: ${String(err)}`);
+          }
+        }
+        return proxy.web(req, res, { target: GATEWAY_TARGET });
+      }
+      // Everything else → Gerald Dashboard
+      return proxy.web(req, res, { target: DASHBOARD_TARGET });
+    }
+
+    // All other hosts fall through to proxy (setup, healthz, etc.)
   }
 
   // ── Existing proxy logic ─────────────────────────────────────────────
@@ -1534,6 +1638,9 @@ const server = app.listen(PORT, async () => {
       console.error(`[wrapper] gateway auto-start failed: ${err.message}`);
     }
   }
+
+  // Start dashboard if installed
+  startDashboard().catch(err => console.error('[dashboard] Auto-start failed:', err));
 });
 
 // Handle WebSocket upgrades
@@ -1551,36 +1658,51 @@ server.on("upgrade", async (req, socket, head) => {
     return;
   }
 
-  try {
-    await ensureGatewayRunning();
-  } catch {
-    socket.destroy();
-    return;
+  // Parse the request path for routing
+  const wsUrl = new URL(req.url, 'http://localhost');
+
+  if (wsUrl.pathname.startsWith('/openclaw')) {
+    // /openclaw paths → OpenClaw gateway WebSocket (chat, etc.)
+    try {
+      await ensureGatewayRunning();
+    } catch {
+      socket.destroy();
+      return;
+    }
+
+    console.log(`[ws-upgrade] Proxying WebSocket to gateway: ${req.url}`);
+
+    // Append token to the URL if not already present
+    const url = new URL(req.url, GATEWAY_TARGET);
+    if (!url.searchParams.has('token')) {
+      url.searchParams.set('token', OPENCLAW_GATEWAY_TOKEN);
+    }
+    req.url = url.pathname + url.search;
+
+    proxy.ws(req, socket, head, {
+      target: GATEWAY_TARGET,
+      headers: {
+        Authorization: `Bearer ${OPENCLAW_GATEWAY_TOKEN}`,
+      },
+    });
+  } else {
+    // All other WebSocket paths → Gerald Dashboard
+    console.log(`[ws-upgrade] Proxying WebSocket to dashboard: ${req.url}`);
+    proxy.ws(req, socket, head, {
+      target: DASHBOARD_TARGET,
+    });
   }
-
-  // Inject auth token via both headers AND query string for maximum compatibility
-  // OpenClaw gateway may read the token from the URL query string for WebSocket connections
-  console.log(`[ws-upgrade] Proxying WebSocket upgrade with token: ${OPENCLAW_GATEWAY_TOKEN.slice(0, 16)}...`);
-
-  // Append token to the URL if not already present
-  const url = new URL(req.url, GATEWAY_TARGET);
-  if (!url.searchParams.has('token')) {
-    url.searchParams.set('token', OPENCLAW_GATEWAY_TOKEN);
-  }
-  req.url = url.pathname + url.search;
-
-  proxy.ws(req, socket, head, {
-    target: GATEWAY_TARGET,
-    headers: {
-      Authorization: `Bearer ${OPENCLAW_GATEWAY_TOKEN}`,
-    },
-  });
 });
 
 process.on("SIGTERM", () => {
   // Best-effort shutdown
   try {
     if (gatewayProc) gatewayProc.kill("SIGTERM");
+  } catch {
+    // ignore
+  }
+  try {
+    if (dashboardProcess) dashboardProcess.kill("SIGTERM");
   } catch {
     // ignore
   }
