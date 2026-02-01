@@ -937,10 +937,18 @@ app.post("/setup/api/run", requireSetupAuth, async (req, res) => {
           String(INTERNAL_GATEWAY_PORT),
         ]),
       );
-      // Disable Control UI for security — clients use web chat only, not the admin panel
+      // Enable Control UI with insecure auth (web chat needs it) and trust the local proxy
       await runCmd(
         OPENCLAW_NODE,
-        clawArgs(["config", "set", "gateway.controlUi.enabled", "false"]),
+        clawArgs(["config", "set", "gateway.controlUi.enabled", "true"]),
+      );
+      await runCmd(
+        OPENCLAW_NODE,
+        clawArgs(["config", "set", "gateway.controlUi.allowInsecureAuth", "true"]),
+      );
+      await runCmd(
+        OPENCLAW_NODE,
+        clawArgs(["config", "set", "--json", "gateway.trustedProxies", '["127.0.0.1/8","::1/128","100.64.0.0/10","172.16.0.0/12"]']),
       );
 
       const channelsHelp = await runCmd(
