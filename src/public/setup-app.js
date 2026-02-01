@@ -77,11 +77,18 @@
         }
       }
 
-      // Pre-fill client domain if server has a default
-      if (j.defaultClientDomain) {
-        var clientDomainEl = document.getElementById('clientDomain');
-        if (clientDomainEl && !clientDomainEl.value) {
+      // Pre-fill client domain: server default → auto-detect from current hostname
+      var clientDomainEl = document.getElementById('clientDomain');
+      if (clientDomainEl && !clientDomainEl.value) {
+        if (j.defaultClientDomain) {
           clientDomainEl.value = j.defaultClientDomain;
+        } else {
+          // Auto-detect from current hostname (strip gerald./dev. prefix, skip railway domains)
+          var host = window.location.hostname.toLowerCase();
+          if (host && host.indexOf('.up.railway.app') === -1 && host !== 'localhost') {
+            var domain = host.replace(/^(gerald|dev)\./, '');
+            clientDomainEl.value = domain;
+          }
         }
       }
 
