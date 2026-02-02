@@ -1812,6 +1812,44 @@ app.post("/setup/api/run", requireSetupAuth, async (req, res) => {
         extra += `[build] Building dev site from ${devBranch}...\n`;
         const devResult = await cloneAndBuild(repoUrl, devBranch, DEV_DIR, token);
         extra += `[build] Dev: ${devResult.output}\n`;
+
+        // Auto-register GitHub webhook for push events (auto-rebuild on push)
+        if (token && payload.clientDomain?.trim()) {
+          try {
+            const webhookUrl = `https://${payload.clientDomain.trim().toLowerCase()}/api/webhook/github`;
+            const repo = payload.githubRepo.trim();
+            
+            // Check if webhook already exists
+            const existingRes = await fetch(`https://api.github.com/repos/${repo}/hooks`, {
+              headers: { 'Authorization': `token ${token}`, 'Accept': 'application/vnd.github.v3+json' },
+            });
+            const existing = existingRes.ok ? await existingRes.json() : [];
+            const alreadyExists = existing.some(h => h.config?.url === webhookUrl);
+            
+            if (!alreadyExists) {
+              const hookRes = await fetch(`https://api.github.com/repos/${repo}/hooks`, {
+                method: 'POST',
+                headers: { 'Authorization': `token ${token}`, 'Accept': 'application/vnd.github.v3+json', 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  name: 'web',
+                  active: true,
+                  events: ['push'],
+                  config: { url: webhookUrl, content_type: 'json', insecure_ssl: '0' },
+                }),
+              });
+              if (hookRes.ok) {
+                extra += `[webhook] ✓ GitHub webhook registered: ${webhookUrl}\n`;
+              } else {
+                const err = await hookRes.text();
+                extra += `[webhook] ⚠️ Failed to register webhook (${hookRes.status}): ${err}\n`;
+              }
+            } else {
+              extra += `[webhook] ✓ GitHub webhook already exists\n`;
+            }
+          } catch (err) {
+            extra += `[webhook] ⚠️ Could not register webhook: ${err.message}\n`;
+          }
+        }
       }
 
       // ── Clone and set up Gerald Dashboard ──────────────────────────────
@@ -2160,6 +2198,11 @@ app.use(async (req, res, next) => {
   const clientDomain = getClientDomain();
   if (clientDomain) {
     const host = req.hostname?.toLowerCase();
+
+    // Allow webhook and API rebuild endpoints through on any domain
+    if (req.path === '/api/webhook/github' || req.path === '/api/rebuild') {
+      return next();
+    }
 
     // Production site: clientdomain.com or www.clientdomain.com
     if (host === clientDomain || host === `www.${clientDomain}`) {
