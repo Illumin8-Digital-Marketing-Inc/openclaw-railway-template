@@ -734,7 +734,7 @@ app.get("/login", (_req, res) => {
         }
         .container {
           width: 100%;
-          max-width: 400px;
+          max-width: 420px;
           background: #111118;
           border-radius: 12px;
           padding: 48px 32px;
@@ -743,23 +743,54 @@ app.get("/login", (_req, res) => {
         }
         .logo {
           text-align: center;
-          margin-bottom: 40px;
+          margin-bottom: 32px;
         }
         .bot-icon {
           width: 64px;
           height: 64px;
-          margin: 0 auto 20px;
+          margin: 0 auto 16px;
         }
         .logo h1 {
           font-size: 36px;
           font-weight: 700;
-          margin-bottom: 8px;
+          margin-bottom: 4px;
           color: #e2e8f0;
         }
         .logo p {
           font-size: 15px;
           color: #94a3b8;
           font-weight: 400;
+        }
+        .tabs {
+          display: flex;
+          gap: 8px;
+          margin-bottom: 24px;
+          border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+        }
+        .tab {
+          flex: 1;
+          padding: 12px 16px;
+          font-size: 14px;
+          font-weight: 500;
+          background: transparent;
+          color: #64748b;
+          border: none;
+          border-bottom: 2px solid transparent;
+          cursor: pointer;
+          transition: all 0.2s ease;
+        }
+        .tab:hover {
+          color: #94a3b8;
+        }
+        .tab.active {
+          color: #00ff87;
+          border-bottom-color: #00ff87;
+        }
+        .tab-content {
+          display: none;
+        }
+        .tab-content.active {
+          display: block;
         }
         .form-group {
           margin-bottom: 24px;
@@ -771,7 +802,8 @@ app.get("/login", (_req, res) => {
           margin-bottom: 8px;
           color: #e2e8f0;
         }
-        input[type="email"] {
+        input[type="email"],
+        input[type="text"] {
           width: 100%;
           padding: 14px 16px;
           font-size: 15px;
@@ -781,13 +813,22 @@ app.get("/login", (_req, res) => {
           color: #e2e8f0;
           transition: all 0.2s ease;
         }
-        input[type="email"]:focus {
+        input[type="email"]:focus,
+        input[type="text"]:focus {
           outline: none;
           border-color: #00ff87;
           box-shadow: 0 0 0 3px rgba(0, 255, 135, 0.1);
         }
-        input[type="email"]::placeholder {
+        input[type="email"]::placeholder,
+        input[type="text"]::placeholder {
           color: #64748b;
+        }
+        input[type="text"] {
+          font-family: 'Courier New', Courier, monospace;
+          font-size: 24px;
+          letter-spacing: 8px;
+          text-align: center;
+          font-weight: 600;
         }
         button {
           width: 100%;
@@ -800,6 +841,10 @@ app.get("/login", (_req, res) => {
           border-radius: 9999px;
           cursor: pointer;
           transition: all 0.2s ease;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          gap: 8px;
         }
         button:hover {
           transform: translateY(-1px);
@@ -813,10 +858,21 @@ app.get("/login", (_req, res) => {
           cursor: not-allowed;
           transform: none;
         }
+        .spinner {
+          width: 16px;
+          height: 16px;
+          border: 2px solid currentColor;
+          border-right-color: transparent;
+          border-radius: 50%;
+          animation: spin 0.6s linear infinite;
+        }
+        @keyframes spin {
+          to { transform: rotate(360deg); }
+        }
         .message {
           padding: 14px 16px;
           border-radius: 8px;
-          margin-bottom: 24px;
+          margin-bottom: 20px;
           font-size: 14px;
           line-height: 1.5;
           text-align: center;
@@ -831,8 +887,19 @@ app.get("/login", (_req, res) => {
           border: 1px solid rgba(0, 255, 135, 0.2);
           color: #00ff87;
         }
+        .info {
+          background: rgba(0, 180, 216, 0.1);
+          border: 1px solid rgba(0, 180, 216, 0.2);
+          color: #7dd3fc;
+        }
         .hidden {
           display: none;
+        }
+        .countdown {
+          margin-top: 12px;
+          font-size: 13px;
+          color: #64748b;
+          text-align: center;
         }
         .footer {
           margin-top: 32px;
@@ -859,30 +926,79 @@ app.get("/login", (_req, res) => {
         </div>
 
         ${errorMessage ? `<div class="message error">${errorMessage}</div>` : ''}
-        
-        <div id="successMessage" class="message success hidden">
-          ✓ Check your email for a login link!
+
+        <div class="tabs">
+          <button type="button" class="tab active" data-tab="email">Email</button>
+          <button type="button" class="tab" data-tab="telegram">Telegram</button>
         </div>
 
-        <div id="errorMessage" class="message error hidden"></div>
-
-        <form id="loginForm">
-          <div class="form-group">
-            <label for="email">Email Address</label>
-            <input 
-              type="email" 
-              id="email" 
-              name="email" 
-              placeholder="you@example.com" 
-              required 
-              autocomplete="email"
-              autofocus
-            />
+        <!-- Email Tab -->
+        <div id="email-tab" class="tab-content active">
+          <div id="emailSuccessMessage" class="message success hidden">
+            ✓ Check your email for a login link!
           </div>
-          <button type="submit" id="submitBtn">
-            Send Magic Link
-          </button>
-        </form>
+          <div id="emailErrorMessage" class="message error hidden"></div>
+
+          <form id="emailForm">
+            <div class="form-group">
+              <label for="email">Email Address</label>
+              <input 
+                type="email" 
+                id="email" 
+                name="email" 
+                placeholder="you@example.com" 
+                required 
+                autocomplete="email"
+                autofocus
+              />
+            </div>
+            <button type="submit" id="emailSubmitBtn">
+              Send Magic Link
+            </button>
+          </form>
+        </div>
+
+        <!-- Telegram Tab -->
+        <div id="telegram-tab" class="tab-content">
+          <div id="telegramSuccessMessage" class="message success hidden"></div>
+          <div id="telegramInfoMessage" class="message info hidden"></div>
+          <div id="telegramErrorMessage" class="message error hidden"></div>
+
+          <div id="sendCodeSection">
+            <p style="font-size: 14px; color: #94a3b8; margin-bottom: 20px; text-align: center;">
+              Get a 6-digit code sent to your Telegram
+            </p>
+            <button type="button" id="sendCodeBtn">
+              Send Code to Telegram
+            </button>
+          </div>
+
+          <div id="verifyCodeSection" class="hidden">
+            <div class="form-group">
+              <label for="code">Enter 6-Digit Code</label>
+              <input 
+                type="text" 
+                id="code" 
+                name="code" 
+                placeholder="000000"
+                maxlength="6"
+                pattern="[0-9]{6}"
+                autocomplete="off"
+              />
+            </div>
+            <button type="button" id="verifyCodeBtn">
+              Verify Code
+            </button>
+            <div id="countdown" class="countdown hidden"></div>
+            <button 
+              type="button" 
+              id="resendCodeBtn"
+              style="background: transparent; color: #00ff87; border: 1px solid rgba(0, 255, 135, 0.2); margin-top: 12px;"
+            >
+              Send Another Code
+            </button>
+          </div>
+        </div>
 
         <div class="footer">
           Powered by OpenClaw
@@ -890,23 +1006,39 @@ app.get("/login", (_req, res) => {
       </div>
 
       <script>
-        const form = document.getElementById('loginForm');
-        const emailInput = document.getElementById('email');
-        const submitBtn = document.getElementById('submitBtn');
-        const successMessage = document.getElementById('successMessage');
-        const errorMessage = document.getElementById('errorMessage');
+        // Tab switching
+        const tabs = document.querySelectorAll('.tab');
+        const tabContents = document.querySelectorAll('.tab-content');
+        
+        tabs.forEach(tab => {
+          tab.addEventListener('click', () => {
+            const targetTab = tab.dataset.tab;
+            
+            tabs.forEach(t => t.classList.remove('active'));
+            tabContents.forEach(tc => tc.classList.remove('active'));
+            
+            tab.classList.add('active');
+            document.getElementById(targetTab + '-tab').classList.add('active');
+          });
+        });
 
-        form.addEventListener('submit', async (e) => {
+        // Email tab
+        const emailForm = document.getElementById('emailForm');
+        const emailInput = document.getElementById('email');
+        const emailSubmitBtn = document.getElementById('emailSubmitBtn');
+        const emailSuccessMessage = document.getElementById('emailSuccessMessage');
+        const emailErrorMessage = document.getElementById('emailErrorMessage');
+
+        emailForm.addEventListener('submit', async (e) => {
           e.preventDefault();
           
           const email = emailInput.value.trim();
           if (!email) return;
 
-          // Disable form
-          submitBtn.disabled = true;
-          submitBtn.textContent = 'Sending...';
-          successMessage.classList.add('hidden');
-          errorMessage.classList.add('hidden');
+          emailSubmitBtn.disabled = true;
+          emailSubmitBtn.innerHTML = '<span class="spinner"></span> Sending...';
+          emailSuccessMessage.classList.add('hidden');
+          emailErrorMessage.classList.add('hidden');
 
           try {
             const response = await fetch('/api/auth/request', {
@@ -918,24 +1050,166 @@ app.get("/login", (_req, res) => {
             const data = await response.json();
 
             if (response.ok) {
-              successMessage.classList.remove('hidden');
+              emailSuccessMessage.classList.remove('hidden');
               emailInput.value = '';
-              submitBtn.textContent = 'Link Sent!';
+              emailSubmitBtn.textContent = 'Link Sent!';
               setTimeout(() => {
-                submitBtn.textContent = 'Send Magic Link';
-                submitBtn.disabled = false;
+                emailSubmitBtn.textContent = 'Send Magic Link';
+                emailSubmitBtn.disabled = false;
               }, 3000);
             } else {
-              errorMessage.textContent = data.error || 'Failed to send login link';
-              errorMessage.classList.remove('hidden');
-              submitBtn.textContent = 'Send Magic Link';
-              submitBtn.disabled = false;
+              emailErrorMessage.textContent = data.error || 'Failed to send login link';
+              emailErrorMessage.classList.remove('hidden');
+              emailSubmitBtn.textContent = 'Send Magic Link';
+              emailSubmitBtn.disabled = false;
             }
           } catch (error) {
-            errorMessage.textContent = 'Network error. Please try again.';
-            errorMessage.classList.remove('hidden');
-            submitBtn.textContent = 'Send Magic Link';
-            submitBtn.disabled = false;
+            emailErrorMessage.textContent = 'Network error. Please try again.';
+            emailErrorMessage.classList.remove('hidden');
+            emailSubmitBtn.textContent = 'Send Magic Link';
+            emailSubmitBtn.disabled = false;
+          }
+        });
+
+        // Telegram tab
+        const sendCodeBtn = document.getElementById('sendCodeBtn');
+        const verifyCodeBtn = document.getElementById('verifyCodeBtn');
+        const resendCodeBtn = document.getElementById('resendCodeBtn');
+        const codeInput = document.getElementById('code');
+        const sendCodeSection = document.getElementById('sendCodeSection');
+        const verifyCodeSection = document.getElementById('verifyCodeSection');
+        const telegramSuccessMessage = document.getElementById('telegramSuccessMessage');
+        const telegramInfoMessage = document.getElementById('telegramInfoMessage');
+        const telegramErrorMessage = document.getElementById('telegramErrorMessage');
+        const countdownDiv = document.getElementById('countdown');
+
+        let countdownInterval = null;
+        let expiresAt = null;
+
+        function startCountdown() {
+          expiresAt = Date.now() + 5 * 60 * 1000; // 5 minutes
+          countdownDiv.classList.remove('hidden');
+          
+          countdownInterval = setInterval(() => {
+            const remaining = Math.max(0, expiresAt - Date.now());
+            const minutes = Math.floor(remaining / 60000);
+            const seconds = Math.floor((remaining % 60000) / 1000);
+            
+            countdownDiv.textContent = \`Code expires in \${minutes}:\${seconds.toString().padStart(2, '0')}\`;
+            
+            if (remaining <= 0) {
+              clearInterval(countdownInterval);
+              countdownDiv.textContent = 'Code expired';
+              countdownDiv.style.color = '#ef4444';
+            }
+          }, 1000);
+        }
+
+        function stopCountdown() {
+          if (countdownInterval) {
+            clearInterval(countdownInterval);
+            countdownInterval = null;
+          }
+          countdownDiv.classList.add('hidden');
+        }
+
+        sendCodeBtn.addEventListener('click', async () => {
+          sendCodeBtn.disabled = true;
+          sendCodeBtn.innerHTML = '<span class="spinner"></span> Sending...';
+          telegramSuccessMessage.classList.add('hidden');
+          telegramInfoMessage.classList.add('hidden');
+          telegramErrorMessage.classList.add('hidden');
+
+          try {
+            const response = await fetch('/api/auth/telegram/send-code', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' }
+            });
+
+            const data = await response.json();
+
+            if (response.ok) {
+              telegramInfoMessage.textContent = '✓ Code sent to Telegram! Check your messages.';
+              telegramInfoMessage.classList.remove('hidden');
+              sendCodeSection.classList.add('hidden');
+              verifyCodeSection.classList.remove('hidden');
+              codeInput.focus();
+              startCountdown();
+            } else {
+              telegramErrorMessage.textContent = data.error || 'Failed to send code';
+              telegramErrorMessage.classList.remove('hidden');
+              sendCodeBtn.textContent = 'Send Code to Telegram';
+              sendCodeBtn.disabled = false;
+            }
+          } catch (error) {
+            telegramErrorMessage.textContent = 'Network error. Please try again.';
+            telegramErrorMessage.classList.remove('hidden');
+            sendCodeBtn.textContent = 'Send Code to Telegram';
+            sendCodeBtn.disabled = false;
+          }
+        });
+
+        resendCodeBtn.addEventListener('click', () => {
+          stopCountdown();
+          verifyCodeSection.classList.add('hidden');
+          sendCodeSection.classList.remove('hidden');
+          codeInput.value = '';
+          sendCodeBtn.textContent = 'Send Code to Telegram';
+          sendCodeBtn.disabled = false;
+          telegramSuccessMessage.classList.add('hidden');
+          telegramInfoMessage.classList.add('hidden');
+          telegramErrorMessage.classList.add('hidden');
+        });
+
+        verifyCodeBtn.addEventListener('click', async () => {
+          const code = codeInput.value.trim();
+          if (!code || code.length !== 6) {
+            telegramErrorMessage.textContent = 'Please enter a 6-digit code';
+            telegramErrorMessage.classList.remove('hidden');
+            return;
+          }
+
+          verifyCodeBtn.disabled = true;
+          verifyCodeBtn.innerHTML = '<span class="spinner"></span> Verifying...';
+          telegramErrorMessage.classList.add('hidden');
+
+          try {
+            const response = await fetch('/api/auth/telegram/verify-code', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ code })
+            });
+
+            const data = await response.json();
+
+            if (response.ok && data.success) {
+              stopCountdown();
+              telegramSuccessMessage.textContent = '✓ Login successful! Redirecting...';
+              telegramSuccessMessage.classList.remove('hidden');
+              telegramInfoMessage.classList.add('hidden');
+              
+              setTimeout(() => {
+                window.location.href = data.redirect || '/';
+              }, 1000);
+            } else {
+              telegramErrorMessage.textContent = data.error || 'Invalid or expired code';
+              telegramErrorMessage.classList.remove('hidden');
+              verifyCodeBtn.textContent = 'Verify Code';
+              verifyCodeBtn.disabled = false;
+            }
+          } catch (error) {
+            telegramErrorMessage.textContent = 'Network error. Please try again.';
+            telegramErrorMessage.classList.remove('hidden');
+            verifyCodeBtn.textContent = 'Verify Code';
+            verifyCodeBtn.disabled = false;
+          }
+        });
+
+        // Auto-submit code on 6 digits
+        codeInput.addEventListener('input', (e) => {
+          e.target.value = e.target.value.replace(/[^0-9]/g, '');
+          if (e.target.value.length === 6) {
+            verifyCodeBtn.click();
           }
         });
       </script>
@@ -1037,6 +1311,159 @@ app.get("/api/auth/verify", async (req, res) => {
   } catch (err) {
     console.error("[auth] Error in /api/auth/verify:", err);
     res.redirect("/login?error=invalid");
+  }
+});
+
+// ── Telegram Code Authentication ──────────────────────────────────────────
+
+// Send 6-digit code via Telegram
+app.post("/api/auth/telegram/send-code", async (req, res) => {
+  try {
+    // Get Telegram bot token from OpenClaw config
+    const cfgPath = configPath();
+    if (!fs.existsSync(cfgPath)) {
+      return res.status(500).json({ error: "OpenClaw not configured" });
+    }
+
+    const config = JSON.parse(fs.readFileSync(cfgPath, "utf8"));
+    const botToken = config?.channels?.telegram?.botToken;
+    if (!botToken) {
+      return res.status(500).json({ error: "Telegram bot not configured" });
+    }
+
+    // Get chat ID from auth config or env var
+    const authConfig = getAuthConfig();
+    const chatId = authConfig.telegramChatId || process.env.TELEGRAM_OWNER_CHAT_ID?.trim();
+    if (!chatId) {
+      return res.status(500).json({ 
+        error: "Telegram Chat ID not configured. Add it in the setup wizard." 
+      });
+    }
+
+    // Generate 6-digit code
+    const code = Math.floor(100000 + Math.random() * 900000).toString();
+
+    // Store code with 5-minute expiry
+    if (!authConfig.telegramCodes) authConfig.telegramCodes = {};
+    authConfig.telegramCodes[code] = {
+      createdAt: Date.now(),
+      expiresAt: Date.now() + 5 * 60 * 1000, // 5 minutes
+    };
+
+    // Clean up expired codes (older than 1 hour)
+    const oneHourAgo = Date.now() - 60 * 60 * 1000;
+    for (const [key, value] of Object.entries(authConfig.telegramCodes)) {
+      if (value.expiresAt < oneHourAgo) {
+        delete authConfig.telegramCodes[key];
+      }
+    }
+
+    saveAuthConfig(authConfig);
+
+    // Send code via Telegram Bot API
+    const message = `🔐 *Your Gerald login code*\n\n\`${code}\`\n\nThis code expires in 5 minutes.`;
+    const telegramUrl = `https://api.telegram.org/bot${botToken}/sendMessage`;
+    
+    const telegramRes = await fetch(telegramUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text: message,
+        parse_mode: "Markdown",
+      }),
+    });
+
+    if (!telegramRes.ok) {
+      const errorData = await telegramRes.json();
+      console.error("[telegram-code] Failed to send message:", errorData);
+      return res.status(500).json({ 
+        error: "Failed to send code via Telegram. Check bot configuration." 
+      });
+    }
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error("[telegram-code] Error in send-code:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Verify 6-digit code
+app.post("/api/auth/telegram/verify-code", async (req, res) => {
+  try {
+    const { code } = req.body;
+    if (!code || typeof code !== "string") {
+      return res.status(400).json({ error: "Code is required" });
+    }
+
+    const normalizedCode = code.trim();
+    const authConfig = getAuthConfig();
+
+    if (!authConfig.telegramCodes || !authConfig.telegramCodes[normalizedCode]) {
+      return res.status(401).json({ error: "Invalid code" });
+    }
+
+    const codeData = authConfig.telegramCodes[normalizedCode];
+    
+    // Check expiry
+    if (Date.now() > codeData.expiresAt) {
+      delete authConfig.telegramCodes[normalizedCode];
+      saveAuthConfig(authConfig);
+      return res.status(401).json({ error: "Code expired" });
+    }
+
+    // Consume the code (one-time use)
+    delete authConfig.telegramCodes[normalizedCode];
+    saveAuthConfig(authConfig);
+
+    // Use the first allowed email for the session
+    const email = authConfig.allowedEmails?.[0];
+    if (!email) {
+      return res.status(500).json({ error: "No allowed emails configured" });
+    }
+
+    // Create session
+    const sessionId = createSession(email);
+
+    // Set session cookie
+    res.cookie("gerald_session", sessionId, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "lax",
+      maxAge: 72 * 60 * 60 * 1000, // 72 hours
+    });
+
+    // Bridge to dashboard (same logic as magic link verify)
+    try {
+      console.log('[telegram-code] Generating dashboard magic code');
+      const dashRes = await fetch(`${DASHBOARD_TARGET}/api/auth/magic/generate`, {
+        method: 'POST',
+        headers: { 'X-Api-Key': INTERNAL_API_KEY, 'Content-Type': 'application/json' }
+      });
+      
+      if (dashRes.ok) {
+        const data = await dashRes.json();
+        console.log('[telegram-code] Dashboard magic code generated');
+        // Return redirect URL for client-side redirect (since this is an AJAX call)
+        return res.json({ 
+          success: true,
+          redirect: `/api/auth/magic/${data.code}`
+        });
+      } else {
+        const body = await dashRes.text();
+        console.error('[telegram-code] Dashboard magic generate failed:', dashRes.status, body);
+        // Fallback: just return success without dashboard bridge
+        return res.json({ success: true, redirect: '/' });
+      }
+    } catch (dashErr) {
+      console.error('[telegram-code] Dashboard magic auth failed:', dashErr.message || dashErr);
+      // Fallback: just return success without dashboard bridge
+      return res.json({ success: true, redirect: '/' });
+    }
+  } catch (err) {
+    console.error("[telegram-code] Error in verify-code:", err);
+    res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -2273,7 +2700,15 @@ app.post("/setup/api/run", requireSetupAuth, async (req, res) => {
             allowedEmails: emails,
             sessions: {},
             magicLinks: {},
+            telegramCodes: {},
           };
+          
+          // Add Telegram Chat ID if provided
+          if (payload.telegramChatId?.trim()) {
+            authConfig.telegramChatId = payload.telegramChatId.trim();
+            extra += `\n[auth] Telegram Chat ID configured: ${authConfig.telegramChatId}\n`;
+          }
+          
           fs.writeFileSync(
             path.join(STATE_DIR, 'auth.json'),
             JSON.stringify(authConfig, null, 2),
