@@ -1138,6 +1138,7 @@ app.get("/setup/api/status", requireSetupAuth, async (_req, res) => {
     defaultClientDomain: process.env.CLIENT_DOMAIN?.trim() || null,
     cloudflareConfigured: !!(process.env.CLOUDFLARE_API_KEY?.trim() && process.env.CLOUDFLARE_EMAIL?.trim()),
     sendgridConfigured: !!(sendgridConfig?.apiKey && sendgridConfig?.senderEmail),
+    hasSendgridEnv: !!process.env.SENDGRID_API_KEY?.trim(),
     authConfigured: !!(authConfig?.allowedEmails?.length > 0),
   });
 });
@@ -2121,9 +2122,10 @@ app.post("/setup/api/run", requireSetupAuth, async (req, res) => {
       }
 
       // ── SendGrid configuration ─────────────────────────────────────────────
-      if (payload.sendgridApiKey?.trim() && payload.sendgridSenderEmail?.trim()) {
+      const resolvedSendgridKey = payload.sendgridApiKey?.trim() || process.env.SENDGRID_API_KEY?.trim();
+      if (resolvedSendgridKey && payload.sendgridSenderEmail?.trim()) {
         const sendgridConfig = {
-          apiKey: payload.sendgridApiKey.trim(),
+          apiKey: resolvedSendgridKey,
           senderEmail: payload.sendgridSenderEmail.trim(),
         };
         fs.writeFileSync(
@@ -2140,7 +2142,7 @@ app.post("/setup/api/run", requireSetupAuth, async (req, res) => {
           extra += `\n[sendgrid-domain] Configuring SendGrid domain authentication...\n`;
           const domainAuthResult = await setupSendGridDomainAuth(
             payload.clientDomain.trim().toLowerCase(),
-            payload.sendgridApiKey.trim()
+            resolvedSendgridKey
           );
           extra += domainAuthResult.output;
         }
@@ -2170,7 +2172,8 @@ app.post("/setup/api/run", requireSetupAuth, async (req, res) => {
 
       // ── Services configuration ───────────────────────────────────────────
       const servicesConfig = {};
-      if (payload.sendgridKey?.trim()) servicesConfig.sendgridKey = payload.sendgridKey.trim();
+      const resolvedServiceSendgrid = payload.sendgridKey?.trim() || resolvedSendgridKey || process.env.SENDGRID_API_KEY?.trim();
+      if (resolvedServiceSendgrid) servicesConfig.sendgridKey = resolvedServiceSendgrid;
       if (payload.twilioSid?.trim()) {
         servicesConfig.twilio = {
           accountSid: payload.twilioSid.trim(),

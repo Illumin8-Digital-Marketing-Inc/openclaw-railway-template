@@ -117,6 +117,14 @@
         }
       }
 
+      // Show that SendGrid key is pre-configured from env var
+      if (j.hasSendgridEnv) {
+        var sgEl = document.getElementById('sendgridApiKey');
+        if (sgEl && !sgEl.value) {
+          sgEl.placeholder = 'Pre-configured from environment (leave blank to use default)';
+        }
+      }
+
       // Pre-fill client domain: server default → auto-detect from current hostname
       var clientDomainEl = document.getElementById('clientDomain');
       if (clientDomainEl && !clientDomainEl.value) {
