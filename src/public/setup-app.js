@@ -117,11 +117,19 @@
         }
       }
 
-      // Show that SendGrid key is pre-configured from env var
+      // Auto-fill SendGrid key from env var
       if (j.hasSendgridEnv) {
         var sgEl = document.getElementById('sendgridApiKey');
         if (sgEl && !sgEl.value) {
           sgEl.placeholder = 'Pre-configured from environment (leave blank to use default)';
+        }
+      }
+
+      // Auto-fill allowed emails from env var
+      if (j.defaultAllowedEmails) {
+        var emailsEl = document.getElementById('allowedEmails');
+        if (emailsEl && !emailsEl.value) {
+          emailsEl.value = j.defaultAllowedEmails;
         }
       }
 
@@ -138,6 +146,23 @@
             clientDomainEl.value = domain;
           }
         }
+      }
+
+      // Auto-fill SendGrid sender email based on client domain
+      var senderEmailEl = document.getElementById('sendgridSenderEmail');
+      if (senderEmailEl && !senderEmailEl.value && clientDomainEl && clientDomainEl.value) {
+        senderEmailEl.value = 'noreply@' + clientDomainEl.value;
+      }
+      // Update sender email when domain changes
+      if (clientDomainEl && senderEmailEl) {
+        clientDomainEl.addEventListener('input', function() {
+          if (!senderEmailEl.dataset.userEdited) {
+            senderEmailEl.value = clientDomainEl.value ? 'noreply@' + clientDomainEl.value : '';
+          }
+        });
+        senderEmailEl.addEventListener('input', function() {
+          senderEmailEl.dataset.userEdited = 'true';
+        });
       }
 
       // If channels are unsupported, surface it for debugging.

@@ -1404,6 +1404,7 @@ app.get("/setup/api/status", requireSetupAuth, async (_req, res) => {
     cloudflareConfigured: !!(process.env.CLOUDFLARE_API_KEY?.trim() && process.env.CLOUDFLARE_EMAIL?.trim()),
     sendgridConfigured: !!(sendgridConfig?.apiKey && sendgridConfig?.senderEmail),
     hasSendgridEnv: !!process.env.SENDGRID_API_KEY?.trim(),
+    defaultAllowedEmails: process.env.DEFAULT_ALLOWED_EMAILS?.trim() || null,
     authConfigured: !!(authConfig?.allowedEmails?.length > 0),
   });
 });
