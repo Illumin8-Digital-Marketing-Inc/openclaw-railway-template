@@ -1830,14 +1830,17 @@ let dashboardProcess = null;
 async function startDashboard() {
   if (dashboardProcess) return;
 
-  if (!fs.existsSync(path.join(DASHBOARD_DIR, 'package.json'))) {
-    console.log('[dashboard] Not installed, attempting auto-setup...');
-    const result = await setupDashboard(); // Will use saved token from github.json
-    if (!result.ok) {
-      console.error('[dashboard] Auto-setup failed:', result.output);
+  // Always run setup (which pulls latest + rebuilds) before starting
+  console.log('[dashboard] Checking for updates...');
+  const result = await setupDashboard();
+  if (!result.ok) {
+    // If setup/update failed but we have an existing install, try to start it anyway
+    if (fs.existsSync(path.join(DASHBOARD_DIR, 'package.json'))) {
+      console.log('[dashboard] Update failed, starting existing version:', result.output);
+    } else {
+      console.error('[dashboard] Setup failed, cannot start:', result.output);
       return;
     }
-    console.log('[dashboard] Auto-setup succeeded');
   }
 
   console.log('[dashboard] Starting on port ' + DASHBOARD_PORT);
