@@ -76,23 +76,28 @@ const WORKSPACE_DIR =
 
 // Get Telegram bot username (for Login Widget)
 let telegramBotUsername = null;
-async function getTelegramBotUsername() {
-  if (telegramBotUsername) return telegramBotUsername;
+let telegramBotId = null;
+async function getTelegramBotInfo() {
+  if (telegramBotUsername && telegramBotId) return { username: telegramBotUsername, id: telegramBotId };
   try {
     const config = JSON.parse(fs.readFileSync(configPath(), 'utf8'));
     const botToken = config?.channels?.telegram?.botToken;
-    if (!botToken) return null;
+    if (!botToken) return { username: null, id: null };
     const res = await fetch(`https://api.telegram.org/bot${botToken}/getMe`);
     const data = await res.json();
     if (data.ok) {
       telegramBotUsername = data.result.username;
-      console.log(`[auth] Telegram Login Widget requires domain setup: send /setdomain to @BotFather and add your gerald subdomain`);
-      return telegramBotUsername;
+      telegramBotId = String(data.result.id);
+      return { username: telegramBotUsername, id: telegramBotId };
     }
   } catch (e) {
-    console.error('[auth] Failed to get bot username:', e.message);
+    console.error('[auth] Failed to get bot info:', e.message);
   }
-  return null;
+  return { username: null, id: null };
+}
+async function getTelegramBotUsername() {
+  const info = await getTelegramBotInfo();
+  return info.username;
 }
 
 // Verify Telegram Login Widget data
@@ -744,8 +749,10 @@ app.get("/login", async (_req, res) => {
     ? "Invalid login link. Please request a new one."
     : "";
 
-  // Get bot username for Telegram Login Widget
-  const botUsername = await getTelegramBotUsername() || process.env.TELEGRAM_BOT_USERNAME?.trim() || null;
+  // Get bot info for Telegram auth
+  const botInfo = await getTelegramBotInfo();
+  const botUsername = botInfo.username || process.env.TELEGRAM_BOT_USERNAME?.trim() || null;
+  const botId = botInfo.id || process.env.TELEGRAM_BOT_ID?.trim() || null;
 
   res.set("Cache-Control", "no-cache, no-store, must-revalidate");
   res.type("text/html");
@@ -1084,8 +1091,8 @@ app.get("/login", async (_req, res) => {
 
         // Telegram login redirect to central auth
         function telegramLogin() {
-          const botUsername = '${botUsername || ''}';
-          if (!botUsername) {
+          const botId = '${botId || ''}';
+          if (!botId) {
             var errEl = document.getElementById('telegramErrorMessage');
             if (errEl) {
               errEl.textContent = 'Telegram bot not configured yet. Complete setup first, or use email login.';
@@ -1094,7 +1101,7 @@ app.get("/login", async (_req, res) => {
             return;
           }
           const returnUrl = encodeURIComponent(window.location.origin + '/api/auth/telegram/callback');
-          window.location.href = 'https://auth.illumin8.ca?return_url=' + returnUrl + '&bot=' + botUsername;
+          window.location.href = 'https://auth.illumin8.ca?return_url=' + returnUrl + '&bot_id=' + botId;
         }
       </script>
     </body>
