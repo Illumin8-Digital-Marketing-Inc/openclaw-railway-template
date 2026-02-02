@@ -883,6 +883,17 @@ async function cloneAndBuild(repoUrl, branch, targetDir, token) {
 
 // ── Gerald Dashboard setup & lifecycle ────────────────────────────────
 async function setupDashboard(token) {
+  // Fall back to saved GitHub token if none provided
+  if (!token) {
+    try {
+      const githubConfig = JSON.parse(fs.readFileSync(path.join(STATE_DIR, 'github.json'), 'utf8'));
+      token = githubConfig.token || '';
+    } catch {}
+  }
+  if (!token) {
+    token = process.env.GITHUB_TOKEN?.trim() || '';
+  }
+
   const dashboardRepo = 'https://github.com/illumin8ca/gerald-dashboard';
   const authUrl = token
     ? dashboardRepo.replace('https://', `https://x-access-token:${token}@`)
@@ -926,8 +937,13 @@ async function startDashboard() {
   if (dashboardProcess) return;
 
   if (!fs.existsSync(path.join(DASHBOARD_DIR, 'package.json'))) {
-    console.log('[dashboard] Not installed, skipping start');
-    return;
+    console.log('[dashboard] Not installed, attempting auto-setup...');
+    const result = await setupDashboard(); // Will use saved token from github.json
+    if (!result.ok) {
+      console.error('[dashboard] Auto-setup failed:', result.output);
+      return;
+    }
+    console.log('[dashboard] Auto-setup succeeded');
   }
 
   console.log('[dashboard] Starting on port ' + DASHBOARD_PORT);
@@ -1478,6 +1494,36 @@ app.post('/api/rebuild', requireSetupAuth, async (req, res) => {
     res.json({ ok: true, output });
   } catch (err) {
     console.error('[rebuild]', err);
+    res.status(500).json({ ok: false, error: String(err) });
+  }
+});
+
+// Rebuild Gerald Dashboard from GitHub
+app.post('/api/rebuild-dashboard', requireSetupAuth, async (req, res) => {
+  try {
+    // Kill existing dashboard
+    if (dashboardProcess) {
+      dashboardProcess.kill('SIGTERM');
+      dashboardProcess = null;
+      await sleep(1000);
+    }
+
+    // Remove existing installation to force fresh clone
+    fs.rmSync(DASHBOARD_DIR, { recursive: true, force: true });
+
+    // Token from request body, github.json, or env
+    const token = req.body?.token?.trim() || '';
+
+    const result = await setupDashboard(token);
+    if (!result.ok) {
+      return res.status(500).json({ ok: false, output: result.output });
+    }
+
+    // Restart dashboard
+    await startDashboard();
+    res.json({ ok: true, output: result.output + '\nDashboard restarted.' });
+  } catch (err) {
+    console.error('[rebuild-dashboard]', err);
     res.status(500).json({ ok: false, error: String(err) });
   }
 });
