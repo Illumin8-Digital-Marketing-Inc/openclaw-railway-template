@@ -2112,10 +2112,19 @@ proxy.on("error", (err, req, res) => {
 proxy.on("proxyReq", (proxyReq, req, res) => {
   if (req._proxyTarget === 'dashboard') {
     // Don't inject gateway token — Dashboard handles its own auth via cookies/JWT
-    return;
+  } else {
+    console.log(`[proxy] HTTP ${req.method} ${req.url} - injecting token: ${OPENCLAW_GATEWAY_TOKEN.slice(0, 16)}...`);
+    proxyReq.setHeader("Authorization", `Bearer ${OPENCLAW_GATEWAY_TOKEN}`);
   }
-  console.log(`[proxy] HTTP ${req.method} ${req.url} - injecting token: ${OPENCLAW_GATEWAY_TOKEN.slice(0, 16)}...`);
-  proxyReq.setHeader("Authorization", `Bearer ${OPENCLAW_GATEWAY_TOKEN}`);
+
+  // Re-inject body consumed by express.json() so http-proxy can forward it.
+  // Without this, POST/PUT/PATCH requests hang because the stream is already drained.
+  if (req.body && Object.keys(req.body).length > 0) {
+    const bodyData = JSON.stringify(req.body);
+    proxyReq.setHeader('Content-Type', 'application/json');
+    proxyReq.setHeader('Content-Length', Buffer.byteLength(bodyData));
+    proxyReq.write(bodyData);
+  }
 });
 
 // Log WebSocket upgrade proxy events (token is injected via headers option in server.on("upgrade"))
