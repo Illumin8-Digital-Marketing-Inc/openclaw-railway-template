@@ -325,6 +325,13 @@ async function startGateway() {
     clawArgs(["config", "set", "gateway.http.endpoints.chatCompletions.enabled", "true"]),
   );
 
+  // Sync default model from env (ensures env var changes take effect without re-onboarding)
+  const envModel = process.env.DEFAULT_MODEL?.trim();
+  if (envModel) {
+    await runCmd(OPENCLAW_NODE, clawArgs(["config", "set", "agents.defaults.model.primary", envModel]));
+    console.log(`[gateway] Model synced: ${envModel}`);
+  }
+
   console.log(`[gateway] Sync result: exit code ${syncResult.code}`);
   if (syncResult.output?.trim()) {
     console.log(`[gateway] Sync output: ${syncResult.output}`);
@@ -1824,7 +1831,7 @@ app.post("/setup/api/run", requireSetupAuth, async (req, res) => {
       if (process.env.MOONSHOT_API_KEY?.trim()) {
         await runCmd(OPENCLAW_NODE, clawArgs([
           'config', 'set', 'agents.defaults.model.primary',
-          process.env.DEFAULT_MODEL?.trim() || 'moonshot/kimi-k2.5-preview'
+          process.env.DEFAULT_MODEL?.trim() || 'moonshot/kimi-k2.5'
         ]));
         extra += `\n[model] Moonshot configured\n`;
       }
