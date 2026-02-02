@@ -169,6 +169,7 @@
       devBranch: document.getElementById('devBranch').value || 'development',
       sendgridApiKey: document.getElementById('sendgridApiKey').value,
       sendgridSenderEmail: document.getElementById('sendgridSenderEmail').value,
+      contactFromName: document.getElementById('contactFromName').value,
       allowedEmails: document.getElementById('allowedEmails').value,
       sendgridKey: document.getElementById('sendgridApiKey').value || document.getElementById('sendgridKey').value,
       twilioSid: document.getElementById('twilioSid').value,

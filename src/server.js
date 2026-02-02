@@ -213,7 +213,7 @@ async function sendMagicLinkEmail(email, token, host) {
 
   const msg = {
     to: email,
-    from: sgConfig.senderEmail,
+    from: { email: sgConfig.senderEmail, name: "Gerald's Dashboard" },
     subject: "Your Gerald Login Link",
     text: `Click this link to log in to Gerald Dashboard:\n\n${magicLink}\n\nThis link expires in 15 minutes.\n\nIf you didn't request this, please ignore this email.`,
     html: `
@@ -2201,6 +2201,7 @@ app.post("/setup/api/run", requireSetupAuth, async (req, res) => {
         const sendgridConfig = {
           apiKey: resolvedSendgridKey,
           senderEmail: payload.sendgridSenderEmail.trim(),
+          contactFromName: payload.contactFromName?.trim() || '',
         };
         fs.writeFileSync(
           path.join(STATE_DIR, 'sendgrid.json'),

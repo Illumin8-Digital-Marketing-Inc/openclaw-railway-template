@@ -258,7 +258,13 @@
         </button>
       </div>
       <div id="services-content" class="collapsible-content collapsed">
-        <p class="card-description">Configure SMS for contact forms. Email uses the SendGrid key from Section ④ above.</p>
+        <p class="card-description">Configure contact form notifications. Email uses the SendGrid key from Section ④ above.</p>
+
+        <div class="form-group">
+          <label for="contactFromName">Contact Form "From" Name</label>
+          <input id="contactFromName" type="text" class="input-field" placeholder="Your Business Name" />
+          <p class="field-hint">The sender name shown on contact form notification emails (e.g. "Acme Inc Website").</p>
+        </div>
         
         <input id="sendgridKey" type="hidden" />
 
