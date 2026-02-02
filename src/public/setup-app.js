@@ -162,7 +162,7 @@
       sendgridApiKey: document.getElementById('sendgridApiKey').value,
       sendgridSenderEmail: document.getElementById('sendgridSenderEmail').value,
       allowedEmails: document.getElementById('allowedEmails').value,
-      sendgridKey: document.getElementById('sendgridKey').value,
+      sendgridKey: document.getElementById('sendgridApiKey').value || document.getElementById('sendgridKey').value,
       twilioSid: document.getElementById('twilioSid').value,
       twilioToken: document.getElementById('twilioToken').value,
       twilioPhone: document.getElementById('twilioPhone').value,

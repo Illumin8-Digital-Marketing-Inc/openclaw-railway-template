@@ -2134,6 +2134,8 @@ app.post("/setup/api/run", requireSetupAuth, async (req, res) => {
         extra += `\n[sendgrid] Configuration saved\n`;
 
         // Auto-configure SendGrid domain authentication if client domain and Cloudflare are available
+        const cfKey = process.env.CLOUDFLARE_API_KEY?.trim();
+        const cfEmail = process.env.CLOUDFLARE_EMAIL?.trim();
         if (payload.clientDomain?.trim() && cfKey && cfEmail) {
           extra += `\n[sendgrid-domain] Configuring SendGrid domain authentication...\n`;
           const domainAuthResult = await setupSendGridDomainAuth(

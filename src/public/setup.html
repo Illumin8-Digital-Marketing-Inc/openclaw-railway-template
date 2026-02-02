@@ -258,16 +258,9 @@
         </button>
       </div>
       <div id="services-content" class="collapsible-content collapsed">
-        <p class="card-description">Configure email and SMS for contact forms</p>
+        <p class="card-description">Configure SMS for contact forms. Email uses the SendGrid key from Section ④ above.</p>
         
-        <div class="form-group">
-          <label for="sendgridKey">SendGrid API Key (Contact Forms)</label>
-          <input id="sendgridKey" type="password" class="input-field" placeholder="SG.xxx" />
-          <p class="field-hint">
-            For contact form email notifications (separate from dashboard auth).
-            <a href="https://app.sendgrid.com/settings/api_keys" target="_blank">Get your key →</a>
-          </p>
-        </div>
+        <input id="sendgridKey" type="hidden" />
 
         <div class="form-group">
           <label for="twilioSid">Twilio Account SID</label>
