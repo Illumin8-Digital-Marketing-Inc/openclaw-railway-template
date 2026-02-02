@@ -196,6 +196,43 @@
       try { j = JSON.parse(text); } catch (_e) { j = { ok: false, output: text }; }
       logEl.textContent += (j.output || JSON.stringify(j, null, 2));
       logEl.scrollTop = logEl.scrollHeight;
+
+      // Show completion banner if setup succeeded
+      if (j.ok) {
+        var banner = document.createElement('div');
+        banner.style.cssText = 'margin-top: 24px; padding: 24px; border-radius: 12px; background: rgba(0,255,135,0.06); border: 1px solid rgba(0,255,135,0.2); text-align: center;';
+        
+        var title = document.createElement('div');
+        title.style.cssText = 'font-size: 20px; font-weight: 700; color: #00ff87; margin-bottom: 8px;';
+        title.textContent = '✅ Setup Complete!';
+        banner.appendChild(title);
+
+        var subtitle = document.createElement('div');
+        subtitle.style.cssText = 'font-size: 14px; color: #94a3b8; margin-bottom: 16px;';
+        subtitle.textContent = 'Your Gerald deployment is ready to go.';
+        banner.appendChild(subtitle);
+
+        if (j.clientDomain) {
+          var link = document.createElement('a');
+          link.href = 'https://gerald.' + j.clientDomain;
+          link.target = '_blank';
+          link.style.cssText = 'display: inline-block; padding: 12px 32px; background: #00ff87; color: #0a0a0f; font-weight: 600; font-size: 15px; border-radius: 999px; text-decoration: none; transition: opacity 0.15s;';
+          link.textContent = 'Open Gerald Dashboard →';
+          link.onmouseover = function() { link.style.opacity = '0.85'; };
+          link.onmouseout = function() { link.style.opacity = '1'; };
+          banner.appendChild(link);
+
+          var links = document.createElement('div');
+          links.style.cssText = 'margin-top: 16px; font-size: 13px; color: #64748b;';
+          links.innerHTML = '<a href="https://' + j.clientDomain + '" target="_blank" style="color: #00b4d8; text-decoration: none;">Production</a>' +
+            ' · <a href="https://dev.' + j.clientDomain + '" target="_blank" style="color: #00b4d8; text-decoration: none;">Dev</a>' +
+            ' · <a href="https://gerald.' + j.clientDomain + '" target="_blank" style="color: #00b4d8; text-decoration: none;">Dashboard</a>';
+          banner.appendChild(links);
+        }
+
+        logEl.parentNode.insertBefore(banner, logEl.nextSibling);
+      }
+
       return refreshStatus();
     }).catch(function (e) {
       logEl.textContent += '\nError: ' + String(e) + '\n';

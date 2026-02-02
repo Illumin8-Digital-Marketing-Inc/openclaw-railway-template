@@ -2579,9 +2579,24 @@ app.post("/setup/api/run", requireSetupAuth, async (req, res) => {
       await restartGateway();
     }
 
+    // Build completion message with link to Gerald dashboard
+    let completionMsg = '';
+    if (ok && illumin8Config.clientDomain) {
+      const domain = illumin8Config.clientDomain;
+      completionMsg = `\n${'─'.repeat(50)}\n` +
+        `✅ Setup complete!\n\n` +
+        `🌐 Production site: https://${domain}\n` +
+        `🔧 Dev site: https://dev.${domain}\n` +
+        `🤖 Gerald Dashboard: https://gerald.${domain}\n` +
+        `\nYour Gerald deployment is ready to go!\n`;
+    } else if (ok) {
+      completionMsg = `\n${'─'.repeat(50)}\n✅ Setup complete!\n`;
+    }
+
     return res.status(ok ? 200 : 500).json({
       ok,
-      output: `${onboard.output}${extra}`,
+      output: `${onboard.output}${extra}${completionMsg}`,
+      clientDomain: illumin8Config.clientDomain || null,
     });
   } catch (err) {
     console.error("[/setup/api/run] error:", err);
