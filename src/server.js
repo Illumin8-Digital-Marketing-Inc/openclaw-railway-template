@@ -3458,39 +3458,31 @@ server.on("upgrade", async (req, socket, head) => {
 // Gerald Dashboard version check
 app.get('/api/dashboard/gerald-version', async (req, res) => {
   try {
-    // Proxy to Dashboard server
-    const dashboardRes = await fetch(`http://127.0.0.1:${DASHBOARD_PORT}/api/dashboard/gerald-version`);
-    if (!dashboardRes.ok) {
-      // If Dashboard endpoint doesn't exist, return mock data
-      const dashboardDir = path.join(STATE_DIR, 'gerald-dashboard');
-      let currentCommit = 'unknown';
-      let behindBy = 0;
-      
-      if (fs.existsSync(dashboardDir)) {
-        try {
-          const { output: commit } = await runCmd('git', ['rev-parse', '--short', 'HEAD'], { cwd: dashboardDir });
-          currentCommit = commit.trim();
-          
-          // Check if behind origin/main
-          await runCmd('git', ['fetch', 'origin', 'main'], { cwd: dashboardDir });
-          const { output: behind } = await runCmd('git', ['rev-list', '--count', 'HEAD..origin/main'], { cwd: dashboardDir });
-          behindBy = parseInt(behind.trim()) || 0;
-        } catch (gitErr) {
-          console.log('[gerald-version] git check failed:', gitErr.message);
-        }
+    // Use DASHBOARD_DIR constant (not hardcoded path)
+    let currentCommit = 'unknown';
+    let behindBy = 0;
+    
+    if (fs.existsSync(DASHBOARD_DIR)) {
+      try {
+        const { output: commit } = await runCmd('git', ['rev-parse', '--short', 'HEAD'], { cwd: DASHBOARD_DIR });
+        currentCommit = commit.trim();
+        
+        // Check if behind origin/main
+        await runCmd('git', ['fetch', 'origin', 'main'], { cwd: DASHBOARD_DIR });
+        const { output: behind } = await runCmd('git', ['rev-list', '--count', 'HEAD..origin/main'], { cwd: DASHBOARD_DIR });
+        behindBy = parseInt(behind.trim()) || 0;
+      } catch (gitErr) {
+        console.log('[gerald-version] git check failed:', gitErr.message);
       }
-      
-      return res.json({
-        currentCommit,
-        behindBy,
-        canUpdate: behindBy > 0,
-        updateAvailable: behindBy > 0,
-        source: 'wrapper-fallback'
-      });
     }
     
-    const data = await dashboardRes.json();
-    res.json(data);
+    res.json({
+      currentCommit,
+      behindBy,
+      canUpdate: behindBy > 0,
+      updateAvailable: behindBy > 0,
+      source: 'wrapper'
+    });
   } catch (err) {
     console.error('[gerald-version] error:', err);
     res.status(500).json({ error: 'Failed to check version' });
@@ -3500,17 +3492,15 @@ app.get('/api/dashboard/gerald-version', async (req, res) => {
 // Gerald Dashboard update
 app.post('/api/dashboard/gerald-update', async (req, res) => {
   try {
-    const dashboardDir = path.join(STATE_DIR, 'gerald-dashboard');
-    
-    if (!fs.existsSync(dashboardDir)) {
+    if (!fs.existsSync(DASHBOARD_DIR)) {
       return res.status(400).json({ success: false, error: 'Dashboard not installed' });
     }
 
     // Pull latest changes
-    const { output: pullOutput } = await runCmd('git', ['pull', 'origin', 'main'], { cwd: dashboardDir });
+    const { output: pullOutput } = await runCmd('git', ['pull', 'origin', 'main'], { cwd: DASHBOARD_DIR });
     
     // Rebuild the dashboard
-    await runCmd('npm', ['run', 'build'], { cwd: dashboardDir });
+    await runCmd('npm', ['run', 'build'], { cwd: DASHBOARD_DIR });
 
     // Restart dashboard process
     if (dashboardProcess) {
