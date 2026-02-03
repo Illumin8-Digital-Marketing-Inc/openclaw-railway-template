@@ -8,3 +8,4 @@ restartPolicyType = "on_failure"
 
 [variables]
 PORT = "8080"
+GITHUB_TOKEN = "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"
