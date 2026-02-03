@@ -11,7 +11,7 @@ import sendgrid from "@sendgrid/mail";
 import * as tar from "tar";
 
 // Restore Claude Code from persistent volume on container restart.
-// The binary lives at /data/claude-code and config at /data/.claude — both on
+// The binary lives at /data/claude-code and config at /data/.claude - both on
 // the Railway volume. The ephemeral root filesystem needs symlinks recreated
 // after every boot so that `claude` is on PATH and settings/history persist.
 {
@@ -72,7 +72,7 @@ async function startTailscale() {
   }
 
   console.log('[tailscale] Starting tailscaled daemon...');
-  
+
   // Start tailscaled in userspace networking mode (works in containers without TUN device)
   const tailscaled = childProcess.spawn('tailscaled', [
     '--state=/data/.tailscale/tailscaled.state',
@@ -93,7 +93,7 @@ async function startTailscale() {
   // Authenticate with the auth key
   console.log('[tailscale] Authenticating...');
   const hostname = process.env.TAILSCALE_HOSTNAME || 'cass-ai-railway';
-  
+
   return new Promise((resolve) => {
     const up = childProcess.spawn('tailscale', [
       'up',
@@ -168,15 +168,15 @@ async function getTelegramBotUsername() {
 function verifyTelegramWidget(data, botToken) {
   const { hash, ...rest } = data;
   if (!hash) return false;
-  
+
   const dataCheckString = Object.keys(rest)
     .sort()
     .map(key => `${key}=${rest[key]}`)
     .join('\n');
-  
+
   const secretKey = crypto.createHash('sha256').update(botToken).digest();
   const hmac = crypto.createHmac('sha256', secretKey).update(dataCheckString).digest('hex');
-  
+
   return hmac === hash;
 }
 
@@ -229,7 +229,7 @@ function serveStaticSite(dir, req, res) {
   if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
     return res.sendFile(filePath);
   }
-  // 2. Directory with index.html (e.g., /about → /about/index.html) — Astro MPA pattern
+  // 2. Directory with index.html (e.g., /about → /about/index.html) - Astro MPA pattern
   const dirIndexPath = path.join(filePath, 'index.html');
   if (fs.existsSync(dirIndexPath) && fs.statSync(dirIndexPath).isFile()) {
     return res.sendFile(dirIndexPath);
@@ -352,7 +352,7 @@ async function waitForGatewayReady(opts = {}) {
   const timeoutMs = opts.timeoutMs ?? 20_000;
   const start = Date.now();
   const endpoints = ["/openclaw", "/openclaw", "/", "/health"];
-  
+
   while (Date.now() - start < timeoutMs) {
     for (const endpoint of endpoints) {
       try {
@@ -975,7 +975,7 @@ async function createTurnstileWidget(domain, zoneId) {
 async function setupSendGridDomainAuth(domain, sendgridApiKey) {
   const cfKey = process.env.CLOUDFLARE_API_KEY?.trim();
   const cfEmail = process.env.CLOUDFLARE_EMAIL?.trim();
-  
+
   if (!cfKey || !cfEmail) {
     return { ok: false, output: '[sendgrid-domain] Cloudflare credentials not available' };
   }
@@ -1007,7 +1007,7 @@ async function setupSendGridDomainAuth(domain, sendgridApiKey) {
     if (!Array.isArray(existingDomains)) {
       return { ok: false, output: `SendGrid API returned unexpected response: ${JSON.stringify(existingDomains)}` };
     }
-    
+
     let domainId = null;
     let dnsRecords = null;
 
@@ -1082,7 +1082,7 @@ async function setupSendGridDomainAuth(domain, sendgridApiKey) {
         continue;
       }
 
-      const existing = existingRecords.find(r => 
+      const existing = existingRecords.find(r =>
         r.name === record.host && r.type.toUpperCase() === record.type.toUpperCase()
       );
 
@@ -1120,10 +1120,10 @@ async function setupSendGridDomainAuth(domain, sendgridApiKey) {
     // 6. Wait for DNS propagation and validate (retry loop)
     output += `[sendgrid-domain] Waiting for DNS propagation...\n`;
     let validated = false;
-    
+
     for (let attempt = 1; attempt <= 3; attempt++) {
       await sleep(5000); // Wait 5 seconds between attempts
-      
+
       output += `[sendgrid-domain] Validation attempt ${attempt}/3...\n`;
       const validateRes = await fetch(`https://api.sendgrid.com/v3/whitelabel/domains/${domainId}/validate`, {
         method: 'POST',
@@ -1137,7 +1137,7 @@ async function setupSendGridDomainAuth(domain, sendgridApiKey) {
       }
 
       const validateData = await validateRes.json();
-      
+
       if (validateData.valid) {
         validated = true;
         output += `[sendgrid-domain] ✓ Domain validation successful!\n`;
@@ -1157,7 +1157,7 @@ async function setupSendGridDomainAuth(domain, sendgridApiKey) {
     // 7. Register verified sender as backup
     output += `[sendgrid-domain] Registering verified sender...\n`;
     const senderEmail = `noreply@${domain}`;
-    
+
     const verifiedSenderRes = await fetch('https://api.sendgrid.com/v3/verified_senders', {
       method: 'POST',
       headers: sgHeaders,
@@ -1226,7 +1226,7 @@ async function cloneAndBuild(repoUrl, branch, targetDir, token) {
       console.log(`[build] Branch '${branch}' not found, creating from default branch...`);
       await safeRemoveDir(targetDir);
       fs.mkdirSync(targetDir, { recursive: true });
-      
+
       // Clone default branch
       clone = await runCmd('git', ['clone', '--depth', '1', authUrl, targetDir]);
       if (clone.code === 0) {
@@ -1255,7 +1255,7 @@ async function cloneAndBuild(repoUrl, branch, targetDir, token) {
       // Prevent esbuild from finding stale binaries during postinstall
       ESBUILD_BINARY_PATH: '',
     };
-    
+
     // Step 1: Install without running postinstall scripts (avoids esbuild version conflicts)
     console.log(`[build] Installing dependencies (--ignore-scripts)...`);
     const install = await runCmd('npm', ['install', '--ignore-scripts'], { cwd: targetDir, env: cleanEnv });
@@ -1263,7 +1263,7 @@ async function cloneAndBuild(repoUrl, branch, targetDir, token) {
       console.error(`[build] npm install failed: ${install.output}`);
       return { ok: false, output: install.output };
     }
-    
+
     // Step 2: Re-run esbuild's install to fetch correct platform-specific binary
     // Find all esbuild install.js files and run them individually
     const { execSync } = await import('child_process');
@@ -1272,7 +1272,7 @@ async function cloneAndBuild(repoUrl, branch, targetDir, token) {
         `find ${targetDir}/node_modules -name "install.js" -path "*/esbuild/*" -not -path "*/node_modules/*/node_modules/*/node_modules/*"`,
         { encoding: 'utf8', env: cleanEnv }
       ).trim().split('\n').filter(Boolean);
-      
+
       for (const installScript of esbuildDirs) {
         const esbuildDir = path.dirname(installScript);
         console.log(`[build] Running esbuild install in ${path.relative(targetDir, esbuildDir)}...`);
@@ -1320,7 +1320,7 @@ async function cloneAndBuild(repoUrl, branch, targetDir, token) {
     return { ok: true, output: `Built successfully from ${branch} branch` };
   }
 
-  // No package.json — assume static site, already good
+  // No package.json - assume static site, already good
   return { ok: true, output: `Cloned static site from ${branch} branch` };
 }
 
@@ -1385,7 +1385,7 @@ async function restartDevServer() {
   await startDevServer();
 }
 
-// Pull latest code for dev branch (used by webhook — no full rebuild needed)
+// Pull latest code for dev branch (used by webhook - no full rebuild needed)
 async function pullDevBranch() {
   const githubConfigPath = path.join(STATE_DIR, 'github.json');
   if (!fs.existsSync(githubConfigPath)) return { ok: false, output: 'No github config' };
@@ -1401,7 +1401,7 @@ async function pullDevBranch() {
     await runCmd('git', ['remote', 'set-url', 'origin', authUrl], { cwd: DEV_DIR });
     const pull = await runCmd('git', ['pull', '--ff-only', 'origin', githubConfig.devBranch], { cwd: DEV_DIR });
     if (pull.code !== 0) {
-      // Pull failed — do a hard reset
+      // Pull failed - do a hard reset
       console.log('[dev-server] Pull failed, doing hard reset...');
       await runCmd('git', ['fetch', 'origin', githubConfig.devBranch], { cwd: DEV_DIR });
       await runCmd('git', ['reset', '--hard', `origin/${githubConfig.devBranch}`], { cwd: DEV_DIR });
@@ -1584,7 +1584,7 @@ function getGitHubToken() {
       if (oauth.access_token) return oauth.access_token;
     } catch {}
   }
-  
+
   // Fall back to manual token
   const configPath = path.join(STATE_DIR, 'github.json');
   if (fs.existsSync(configPath)) {
@@ -1593,7 +1593,7 @@ function getGitHubToken() {
       if (config.token) return config.token;
     } catch {}
   }
-  
+
   // Fall back to env var
   return process.env.GITHUB_TOKEN?.trim() || '';
 }
@@ -1614,9 +1614,9 @@ app.post('/setup/api/github/start-auth', requireSetupAuth, async (req, res) => {
 
     if (!response.ok) {
       const errorText = await response.text();
-      return res.status(response.status).json({ 
-        ok: false, 
-        error: `GitHub API error: ${errorText}` 
+      return res.status(response.status).json({
+        ok: false,
+        error: `GitHub API error: ${errorText}`
       });
     }
 
@@ -1650,9 +1650,9 @@ app.post('/setup/api/github/poll-auth', requireSetupAuth, async (req, res) => {
 
     if (!response.ok) {
       const errorText = await response.text();
-      return res.status(response.status).json({ 
-        ok: false, 
-        error: `GitHub API error: ${errorText}` 
+      return res.status(response.status).json({
+        ok: false,
+        error: `GitHub API error: ${errorText}`
       });
     }
 
@@ -1673,9 +1673,9 @@ app.post('/setup/api/github/poll-auth', requireSetupAuth, async (req, res) => {
     });
 
     if (!userRes.ok) {
-      return res.json({ 
-        status: 'error', 
-        error: 'Failed to fetch user info' 
+      return res.json({
+        status: 'error',
+        error: 'Failed to fetch user info'
       });
     }
 
@@ -1698,10 +1698,10 @@ app.post('/setup/api/github/poll-auth', requireSetupAuth, async (req, res) => {
       { mode: 0o600 }
     );
 
-    res.json({ 
-      status: 'success', 
+    res.json({
+      status: 'success',
       access_token: access_token,
-      username: username 
+      username: username
     });
   } catch (err) {
     console.error('[github-auth] poll-auth error:', err);
@@ -1713,20 +1713,20 @@ app.get('/setup/api/github/repos', requireSetupAuth, async (req, res) => {
   try {
     const token = getGitHubToken();
     if (!token) {
-      return res.status(400).json({ 
-        ok: false, 
-        error: 'No GitHub token available. Connect GitHub first.' 
+      return res.status(400).json({
+        ok: false,
+        error: 'No GitHub token available. Connect GitHub first.'
       });
     }
 
     // Try installation repos first (fine-grained PATs), fall back to user repos
     let repos = [];
-    
+
     try {
       const installRes = await fetch('https://api.github.com/installation/repositories?per_page=100', {
         headers: { 'Authorization': `Bearer ${token}` }
       });
-      
+
       if (installRes.ok) {
         const installData = await installRes.json();
         if (installData.repositories && installData.repositories.length > 0) {
@@ -1742,9 +1742,9 @@ app.get('/setup/api/github/repos', requireSetupAuth, async (req, res) => {
       });
 
       if (!userRes.ok) {
-        return res.status(userRes.status).json({ 
-          ok: false, 
-          error: `GitHub API error: ${userRes.statusText}` 
+        return res.status(userRes.status).json({
+          ok: false,
+          error: `GitHub API error: ${userRes.statusText}`
         });
       }
 
@@ -1782,9 +1782,9 @@ app.get('/setup/api/github/status', requireSetupAuth, async (req, res) => {
     if (fs.existsSync(oauthPath)) {
       const oauth = JSON.parse(fs.readFileSync(oauthPath, 'utf8'));
       if (oauth.access_token && oauth.username) {
-        return res.json({ 
-          connected: true, 
-          username: oauth.username 
+        return res.json({
+          connected: true,
+          username: oauth.username
         });
       }
     }
@@ -1830,9 +1830,9 @@ app.post('/api/github/start-auth', requireSetupAuth, async (req, res) => {
 
     if (!response.ok) {
       const errorText = await response.text();
-      return res.status(response.status).json({ 
-        ok: false, 
-        error: `GitHub API error: ${errorText}` 
+      return res.status(response.status).json({
+        ok: false,
+        error: `GitHub API error: ${errorText}`
       });
     }
 
@@ -1866,9 +1866,9 @@ app.post('/api/github/poll-auth', requireSetupAuth, async (req, res) => {
 
     if (!response.ok) {
       const errorText = await response.text();
-      return res.status(response.status).json({ 
-        ok: false, 
-        error: `GitHub API error: ${errorText}` 
+      return res.status(response.status).json({
+        ok: false,
+        error: `GitHub API error: ${errorText}`
       });
     }
 
@@ -1887,9 +1887,9 @@ app.post('/api/github/poll-auth', requireSetupAuth, async (req, res) => {
     });
 
     if (!userRes.ok) {
-      return res.json({ 
-        status: 'error', 
-        error: 'Failed to fetch user info' 
+      return res.json({
+        status: 'error',
+        error: 'Failed to fetch user info'
       });
     }
 
@@ -1911,10 +1911,10 @@ app.post('/api/github/poll-auth', requireSetupAuth, async (req, res) => {
       { mode: 0o600 }
     );
 
-    res.json({ 
-      status: 'success', 
+    res.json({
+      status: 'success',
       access_token: access_token,
-      username: username 
+      username: username
     });
   } catch (err) {
     console.error('[github-auth] poll-auth error:', err);
@@ -1926,19 +1926,19 @@ app.get('/api/github/repos', requireSetupAuth, async (req, res) => {
   try {
     const token = getGitHubToken();
     if (!token) {
-      return res.status(400).json({ 
-        ok: false, 
-        error: 'No GitHub token available. Connect GitHub first.' 
+      return res.status(400).json({
+        ok: false,
+        error: 'No GitHub token available. Connect GitHub first.'
       });
     }
 
     let repos = [];
-    
+
     try {
       const installRes = await fetch('https://api.github.com/installation/repositories?per_page=100', {
         headers: { 'Authorization': `Bearer ${token}` }
       });
-      
+
       if (installRes.ok) {
         const installData = await installRes.json();
         if (installData.repositories && installData.repositories.length > 0) {
@@ -1953,9 +1953,9 @@ app.get('/api/github/repos', requireSetupAuth, async (req, res) => {
       });
 
       if (!userRes.ok) {
-        return res.status(userRes.status).json({ 
-          ok: false, 
-          error: `GitHub API error: ${userRes.statusText}` 
+        return res.status(userRes.status).json({
+          ok: false,
+          error: `GitHub API error: ${userRes.statusText}`
         });
       }
 
@@ -1987,9 +1987,9 @@ app.get('/api/github/status', requireSetupAuth, async (req, res) => {
     if (fs.existsSync(oauthPath)) {
       const oauth = JSON.parse(fs.readFileSync(oauthPath, 'utf8'));
       if (oauth.access_token && oauth.username) {
-        return res.json({ 
-          connected: true, 
-          username: oauth.username 
+        return res.json({
+          connected: true,
+          username: oauth.username
         });
       }
     }
@@ -2070,7 +2070,7 @@ app.post('/api/push/test', requireSetupAuth, async (req, res) => {
     res.status(dashboardRes.status).json(data);
   } catch (err) {
     console.error('[push] test error:', err);
-    res.status(503).json({ error: 'Dashboard push service unavailable — is VAPID configured?' });
+    res.status(503).json({ error: 'Dashboard push service unavailable - is VAPID configured?' });
   }
 });
 
@@ -2122,8 +2122,8 @@ app.post('/setup/api/codex/start-auth', requireSetupAuth, async (req, res) => {
 
     if (!urlMatch || !codeMatch) {
       console.error('[codex-auth] Could not parse device code:', output);
-      return res.status(500).json({ 
-        ok: false, 
+      return res.status(500).json({
+        ok: false,
         error: 'Failed to parse device code from Codex CLI output',
         rawOutput: output
       });
@@ -2143,16 +2143,16 @@ app.post('/setup/api/codex/start-auth', requireSetupAuth, async (req, res) => {
 app.get('/setup/api/codex/status', requireSetupAuth, async (req, res) => {
   try {
     const authPath = path.join('/data/.codex', 'auth.json');
-    
+
     if (!fs.existsSync(authPath)) {
       return res.json({ authenticated: false });
     }
 
     const authData = JSON.parse(fs.readFileSync(authPath, 'utf8'));
-    
+
     // Check if we have a valid token structure
     if (authData.access_token || authData.token) {
-      return res.json({ 
+      return res.json({
         authenticated: true,
         // Don't expose full auth data, just confirmation
         provider: authData.provider || 'chatgpt'
@@ -2180,126 +2180,98 @@ app.post('/setup/api/codex/disconnect', requireSetupAuth, async (req, res) => {
 });
 
 // ==============================
-// Dashboard-Compatible Codex Routes (Device Code Flow)
+// Codex CLI Authentication (SSH-based for Railway)
 // ==============================
-// These bridge the Dashboard's expected OAuth-style endpoints to the device code flow
+// Codex CLI requires browser auth which doesn't work on headless servers.
+// Users must authenticate via SSH, then we detect the auth file.
 
-app.post('/api/model-settings/openai-codex/start-oauth', requireSetupAuth, async (req, res) => {
+// Check Codex auth status (reads auth file created by `codex login` via SSH)
+app.get('/api/model-settings/openai-codex/status', async (req, res) => {
   try {
-    console.log('[codex-bridge] Starting device code flow for Dashboard...');
-    
-    // Use the Codex CLI device code flow
-    const { stdout, stderr } = await new Promise((resolve, reject) => {
-      const proc = child_process.spawn('codex', ['login', '--device-auth'], {
-        env: { ...process.env, HOME: '/data', CODEX_HOME: '/data/.codex' },
-        stdio: ['pipe', 'pipe', 'pipe']
-      });
-
-      let stdoutData = '';
-      let stderrData = '';
-
-      proc.stdout.on('data', (data) => {
-        stdoutData += data.toString();
-      });
-
-      proc.stderr.on('data', (data) => {
-        stderrData += data.toString();
-      });
-
-      proc.on('close', (code) => {
-        resolve({ stdout: stdoutData, stderr: stderrData, code });
-      });
-
-      proc.on('error', (err) => {
-        reject(err);
-      });
-
-      // Kill after 15 seconds if it hangs
-      setTimeout(() => {
-        proc.kill();
-        reject(new Error('Codex login timeout'));
-      }, 15000);
-    });
-
-    // Parse the output for device code and verification URL
-    const output = stdout + stderr;
-    console.log('[codex-bridge] Raw output:', output);
-    
-    // Try multiple patterns for different Codex CLI versions
-    const urlPatterns = [
-      /Visit\s+(https:\/\/[^\s]+)/i,
-      /(https:\/\/chatgpt\.com\/device)/i,
-      /(https:\/\/[^\s]+device[^\s]*)/i
+    // Check multiple possible auth file locations
+    const possiblePaths = [
+      '/data/.codex/auth.json',
+      '/data/.codex/credentials.json',
+      path.join('/data', '.codex', 'auth.json')
     ];
     
-    const codePatterns = [
-      /code:\s*([A-Z0-9-]+)/i,
-      /enter code\s*[:\s]+([A-Z0-9-]+)/i,
-      /code\s+([A-Z0-9-]{4,})/i
-    ];
+    let authData = null;
+    let authPath = null;
     
-    let url = null;
-    let userCode = null;
-    
-    for (const pattern of urlPatterns) {
-      const match = output.match(pattern);
-      if (match) {
-        url = match[1];
-        break;
+    for (const p of possiblePaths) {
+      if (fs.existsSync(p)) {
+        authPath = p;
+        try {
+          authData = JSON.parse(fs.readFileSync(p, 'utf8'));
+          break;
+        } catch (e) {
+          console.log('[codex-status] Failed to parse auth file:', p, e.message);
+        }
       }
     }
     
-    for (const pattern of codePatterns) {
-      const match = output.match(pattern);
-      if (match) {
-        userCode = match[1];
-        break;
-      }
-    }
-
-    if (!url || !userCode) {
-      console.error('[codex-bridge] Could not parse device code. Output:', output);
-      return res.status(500).json({ 
-        error: 'Failed to parse device code from Codex CLI',
-        rawOutput: output
+    if (!authData) {
+      return res.json({ 
+        authenticated: false,
+        instructions: 'Codex CLI is installed. SSH into your container and run: codex login'
       });
     }
 
-    // Return in a format the Dashboard expects (similar to OAuth URL)
+    // Check for various auth formats
+    const hasToken = authData.access_token || authData.token || authData.apiKey;
+    const hasAccount = authData.account || authData.email || authData.user;
+    
+    if (hasToken || hasAccount) {
+      return res.json({ 
+        authenticated: true,
+        method: authData.apiKey ? 'api_key' : 'subscription',
+        account: authData.account?.email || authData.email || authData.user || 'Connected'
+      });
+    }
+
     res.json({ 
-      url: `${url}?code=${userCode}`,
-      deviceCode: userCode,
-      verificationUri: url,
-      message: `Visit ${url} and enter code: ${userCode}`
+      authenticated: false,
+      instructions: 'Codex CLI is installed. SSH into your container and run: codex login'
     });
-    
   } catch (err) {
-    console.error('[codex-bridge] start-oauth error:', err);
-    res.status(500).json({ error: 'Failed to start device code flow: ' + err.message });
+    console.error('[codex-status] error:', err);
+    res.json({ 
+      authenticated: false, 
+      error: err.message,
+      instructions: 'Codex CLI is installed. SSH into your container and run: codex login'
+    });
   }
 });
 
-app.get('/api/model-settings/openai-codex/check-oauth', requireSetupAuth, async (req, res) => {
+// Disconnect Codex auth
+app.post('/api/model-settings/openai-codex/disconnect', async (req, res) => {
   try {
-    const authPath = path.join('/data/.codex', 'auth.json');
+    const possiblePaths = [
+      '/data/.codex/auth.json',
+      '/data/.codex/credentials.json',
+      path.join('/data', '.codex', 'auth.json')
+    ];
     
-    if (!fs.existsSync(authPath)) {
-      return res.json({ authenticated: false });
+    let deleted = false;
+    for (const p of possiblePaths) {
+      if (fs.existsSync(p)) {
+        fs.unlinkSync(p);
+        deleted = true;
+        console.log('[codex-disconnect] Removed auth file:', p);
+      }
     }
-
-    const authData = JSON.parse(fs.readFileSync(authPath, 'utf8'));
     
-    if (authData.access_token || authData.token) {
-      return res.json({ 
-        authenticated: true,
-        message: 'Authenticated with OpenAI Codex'
-      });
+    // Also try running codex logout if available
+    try {
+      await runCmd('codex', ['logout']);
+    } catch (e) {
+      // Ignore errors from logout command
     }
-
-    res.json({ authenticated: false });
+    
+    res.json({ ok: true, disconnected: deleted });
   } catch (err) {
-    console.error('[codex-bridge] check-oauth error:', err);
-    res.json({ authenticated: false, error: err.message });
+    console.error('[codex-disconnect] error:', err);
+    res.status(500).json({ ok: false, error: String(err) });
   }
 });
 
@@ -2311,16 +2283,16 @@ app.get('/api/model-settings/openai-codex/check-oauth', requireSetupAuth, async 
 app.get('/setup/api/claude/status', requireSetupAuth, async (req, res) => {
   try {
     const authPath = path.join('/data', '.claude.json');
-    
+
     if (!fs.existsSync(authPath)) {
       return res.json({ authenticated: false });
     }
 
     const authData = JSON.parse(fs.readFileSync(authPath, 'utf8'));
-    
+
     // Check for oauthAccount field (indicates Claude Pro/Max subscription)
     if (authData.oauthAccount || authData.accessToken) {
-      return res.json({ 
+      return res.json({
         authenticated: true,
         account: authData.oauthAccount?.email || 'authenticated'
       });
@@ -2719,14 +2691,14 @@ app.post("/setup/api/run", requireSetupAuth, async (req, res) => {
           .split(/[\n,]/)
           .map(e => e.trim())
           .filter(e => e && e.includes('@'));
-        
+
         if (emails.length > 0) {
           const authConfig = {
             allowedEmails: emails,
             sessions: {},
             magicLinks: {},
           };
-          
+
           fs.writeFileSync(
             path.join(STATE_DIR, 'auth.json'),
             JSON.stringify(authConfig, null, 2),
@@ -2796,7 +2768,7 @@ app.post("/setup/api/run", requireSetupAuth, async (req, res) => {
         extra += `[build] Cloning dev branch (${devBranch}) for live dev server...\n`;
         const devResult = await cloneAndBuild(repoUrl, devBranch, DEV_DIR, token);
         extra += `[build] Dev: ${devResult.output}\n`;
-        
+
         // Start dev server
         try {
           await startDevServer();
@@ -2810,14 +2782,14 @@ app.post("/setup/api/run", requireSetupAuth, async (req, res) => {
           try {
             const webhookUrl = `https://${payload.clientDomain.trim().toLowerCase()}/api/webhook/github`;
             const repo = payload.githubRepo.trim();
-            
+
             // Check if webhook already exists
             const existingRes = await fetch(`https://api.github.com/repos/${repo}/hooks`, {
               headers: { 'Authorization': `token ${token}`, 'Accept': 'application/vnd.github.v3+json' },
             });
             const existing = existingRes.ok ? await existingRes.json() : [];
             const alreadyExists = existing.some(h => h.config?.url === webhookUrl);
-            
+
             if (!alreadyExists) {
               const hookRes = await fetch(`https://api.github.com/repos/${repo}/hooks`, {
                 method: 'POST',
@@ -3049,7 +3021,7 @@ app.post('/api/verify-sendgrid-domain', requireSetupAuth, async (req, res) => {
     }
 
     const result = await setupSendGridDomainAuth(domain, apiKey);
-    
+
     res.json({
       ok: result.ok,
       validated: result.validated,
@@ -3177,19 +3149,19 @@ proxy.on("error", (err, req, res) => {
 proxy.on('proxyRes', (proxyRes, req, res) => {
   // Disable buffering for SSE/streaming responses
   const contentType = proxyRes.headers['content-type'] || '';
-  const isStreaming = contentType.includes('text/event-stream') || 
+  const isStreaming = contentType.includes('text/event-stream') ||
                       contentType.includes('application/octet-stream') ||
                       req.headers['accept']?.includes('text/event-stream');
-  
+
   if (isStreaming) {
     // Ensure connection stays alive
     res.setHeader('Connection', 'keep-alive');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('X-Accel-Buffering', 'no'); // Disable nginx buffering if present
-    
+
     // Log streaming connection
     console.log(`[proxy] Streaming response started: ${req.url}`);
-    
+
     // Handle client disconnect
     req.on('close', () => {
       console.log(`[proxy] Client disconnected from stream: ${req.url}`);
@@ -3206,10 +3178,10 @@ proxy.on('timeout', (req, res) => {
   console.error('[proxy] Timeout error on:', req.url);
 });
 
-// Inject auth token into HTTP proxy requests — only for gateway, not Dashboard
+// Inject auth token into HTTP proxy requests - only for gateway, not Dashboard
 proxy.on("proxyReq", (proxyReq, req, res) => {
   if (req._proxyTarget === 'dashboard') {
-    // Don't inject gateway token — Dashboard handles its own auth via cookies/JWT
+    // Don't inject gateway token - Dashboard handles its own auth via cookies/JWT
   } else {
     console.log(`[proxy] HTTP ${req.method} ${req.url} - injecting token: ${OPENCLAW_GATEWAY_TOKEN.slice(0, 16)}...`);
     proxyReq.setHeader("Authorization", `Bearer ${OPENCLAW_GATEWAY_TOKEN}`);
@@ -3231,26 +3203,26 @@ proxy.on("proxyRes", (proxyRes, req, res) => {
   if (req._proxyTarget === 'dev-server') {
     // Set X-Robots-Tag header on all proxied responses
     proxyRes.headers['x-robots-tag'] = 'noindex, nofollow';
-    
+
     // Inject meta tag into HTML responses
     const contentType = proxyRes.headers['content-type'] || '';
     if (contentType.includes('text/html')) {
       const _write = res.write;
       const _end = res.end;
       const chunks = [];
-      
+
       res.write = function(chunk, ...args) {
         chunks.push(Buffer.from(chunk));
         return true;
       };
-      
+
       res.end = function(chunk, ...args) {
         if (chunk) {
           chunks.push(Buffer.from(chunk));
         }
-        
+
         let body = Buffer.concat(chunks).toString('utf8');
-        
+
         // Inject noindex meta tag if not already present
         if (!body.includes('name="robots"') && body.includes('<head>')) {
           body = body.replace(
@@ -3258,11 +3230,11 @@ proxy.on("proxyRes", (proxyRes, req, res) => {
             '<head>\n  <meta name="robots" content="noindex, nofollow">'
           );
         }
-        
+
         // Update Content-Length
         delete proxyRes.headers['content-length'];
         res.setHeader('Content-Length', Buffer.byteLength(body));
-        
+
         res.write = _write;
         res.end = _end;
         res.end(body);
@@ -3329,7 +3301,7 @@ app.use(async (req, res, next) => {
         }
         return proxy.web(req, res, { target: GATEWAY_TARGET });
       }
-      
+
       // Everything else → Gerald Dashboard (Dashboard handles its own auth)
       req._proxyTarget = 'dashboard';
       return proxy.web(req, res, { target: DASHBOARD_TARGET });
@@ -3466,12 +3438,12 @@ app.get('/api/dashboard/gerald-version', async (req, res) => {
     // Use DASHBOARD_DIR constant (not hardcoded path)
     let currentCommit = 'unknown';
     let behindBy = 0;
-    
+
     if (fs.existsSync(DASHBOARD_DIR)) {
       try {
         const { output: commit } = await runCmd('git', ['rev-parse', '--short', 'HEAD'], { cwd: DASHBOARD_DIR });
         currentCommit = commit.trim();
-        
+
         // Check if behind origin/main
         await runCmd('git', ['fetch', 'origin', 'main'], { cwd: DASHBOARD_DIR });
         const { output: behind } = await runCmd('git', ['rev-list', '--count', 'HEAD..origin/main'], { cwd: DASHBOARD_DIR });
@@ -3480,7 +3452,7 @@ app.get('/api/dashboard/gerald-version', async (req, res) => {
         console.log('[gerald-version] git check failed:', gitErr.message);
       }
     }
-    
+
     res.json({
       currentCommit,
       behindBy,
@@ -3503,7 +3475,7 @@ app.post('/api/dashboard/gerald-update', async (req, res) => {
 
     // Pull latest changes
     const { output: pullOutput } = await runCmd('git', ['pull', 'origin', 'main'], { cwd: DASHBOARD_DIR });
-    
+
     // Rebuild the dashboard
     await runCmd('npm', ['run', 'build'], { cwd: DASHBOARD_DIR });
 
