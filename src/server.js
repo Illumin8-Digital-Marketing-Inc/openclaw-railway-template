@@ -2596,8 +2596,8 @@ server.on("upgrade", async (req, socket, head) => {
   // Parse the request path for routing
   const wsUrl = new URL(req.url, 'http://localhost');
 
-  if (wsUrl.pathname.startsWith('/openclaw')) {
-    // /openclaw paths → OpenClaw gateway WebSocket (chat, etc.)
+  if (wsUrl.pathname.startsWith('/openclaw') || wsUrl.pathname === '/') {
+    // /openclaw paths OR root path → OpenClaw gateway WebSocket (chat, node connections, etc.)
     try {
       await ensureGatewayRunning();
     } catch {
