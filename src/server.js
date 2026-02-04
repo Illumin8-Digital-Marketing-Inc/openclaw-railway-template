@@ -2163,67 +2163,55 @@ app.post('/api/push/test', requireSetupAuth, async (req, res) => {
 });
 
 // ==============================
-// Codex CLI Authentication (Device Code Flow)
+// Codex CLI Authentication (Token Paste Method)
 // ==============================
+// Instead of running codex CLI on the container (unreliable), users paste their auth token
 app.post('/setup/api/codex/start-auth', requireSetupAuth, async (req, res) => {
+  // Return instructions for token-based auth
+  res.json({
+    ok: true,
+    method: 'token-paste',
+    instructions: [
+      '1. On your local machine, install Codex CLI: npm install -g @openai/codex',
+      '2. Run: codex login',
+      '3. Complete the authentication in your browser',
+      '4. Copy the contents of ~/.codex/auth.json',
+      '5. Paste the JSON below and click "Save Token"'
+    ],
+    authFilePath: '~/.codex/auth.json'
+  });
+});
+
+// Save Codex auth token (pasted from local machine)
+app.post('/setup/api/codex/save-token', requireSetupAuth, async (req, res) => {
   try {
-    // Codex CLI supports device code auth via `codex login --device-auth`
-    // We'll initiate the flow by running the command and capturing the output
-    const { stdout, stderr } = await new Promise((resolve, reject) => {
-      const proc = childProcess.spawn('codex', ['login', '--device-auth'], {
-        env: { ...process.env, HOME: '/data', CODEX_HOME: '/data/.codex' },
-        stdio: ['pipe', 'pipe', 'pipe']
-      });
-
-      let stdoutData = '';
-      let stderrData = '';
-
-      proc.stdout.on('data', (data) => {
-        stdoutData += data.toString();
-      });
-
-      proc.stderr.on('data', (data) => {
-        stderrData += data.toString();
-      });
-
-      proc.on('close', (code) => {
-        resolve({ stdout: stdoutData, stderr: stderrData, code });
-      });
-
-      proc.on('error', (err) => {
-        reject(err);
-      });
-
-      // Kill after 10 seconds if it hangs
-      setTimeout(() => {
-        proc.kill();
-        reject(new Error('Codex login timeout'));
-      }, 10000);
-    });
-
-    // Parse the output for device code and verification URL
-    // Expected output format:
-    // "Visit https://chatgpt.com/device and enter code: XXXX-XXXX"
-    const output = stdout + stderr;
-    const urlMatch = output.match(/Visit\s+(https:\/\/[^\s]+)/i);
-    const codeMatch = output.match(/code:\s*([A-Z0-9-]+)/i);
-
-    if (!urlMatch || !codeMatch) {
-      console.error('[codex-auth] Could not parse device code:', output);
-      return res.status(500).json({
-        ok: false,
-        error: 'Failed to parse device code from Codex CLI output',
-        rawOutput: output
-      });
+    const { authJson } = req.body;
+    
+    if (!authJson) {
+      return res.status(400).json({ ok: false, error: 'authJson is required' });
     }
-
-    res.json({
-      verification_uri: urlMatch[1],
-      user_code: codeMatch[1],
-      message: 'Visit the URL and enter the code to authenticate'
-    });
+    
+    // Validate it's valid JSON with expected fields
+    let authData;
+    try {
+      authData = typeof authJson === 'string' ? JSON.parse(authJson) : authJson;
+    } catch (e) {
+      return res.status(400).json({ ok: false, error: 'Invalid JSON format' });
+    }
+    
+    if (!authData.access_token && !authData.token && !authData.refresh_token) {
+      return res.status(400).json({ ok: false, error: 'Auth JSON must contain access_token, token, or refresh_token' });
+    }
+    
+    // Save to /data/.codex/auth.json
+    const codexDir = '/data/.codex';
+    fs.mkdirSync(codexDir, { recursive: true });
+    fs.writeFileSync(path.join(codexDir, 'auth.json'), JSON.stringify(authData, null, 2), { mode: 0o600 });
+    
+    console.log('[codex-auth] Token saved successfully');
+    res.json({ ok: true, message: 'Codex authentication saved' });
   } catch (err) {
-    console.error('[codex-auth] start-auth error:', err);
+    console.error('[codex-auth] save-token error:', err);
     res.status(500).json({ ok: false, error: String(err) });
   }
 });

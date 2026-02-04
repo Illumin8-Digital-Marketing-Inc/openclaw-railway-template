@@ -266,32 +266,35 @@
           <!-- Not connected state -->
           <div id="codex-not-connected">
             <p class="field-hint" style="margin-bottom: 12px;">
-              Uses your ChatGPT Plus/Pro subscription. Requires device code authentication enabled in your ChatGPT security settings.
+              Uses your ChatGPT Plus/Pro subscription. Authenticate on your local machine, then paste the token here.
             </p>
-            <button type="button" onclick="startCodexAuth()" class="btn-primary" style="width: 100%;">
-              Connect Codex
+            <button type="button" onclick="showCodexInstructions()" class="btn-secondary" style="width: 100%; margin-bottom: 12px;">
+              Show Setup Instructions
             </button>
           </div>
 
-          <!-- Auth in progress state -->
-          <div id="codex-auth-progress" style="display:none">
-            <p class="field-hint" style="margin-bottom: 8px;">Enter this code on ChatGPT:</p>
-            <div class="user-code" id="codex-user-code">XXXX-XXXX</div>
-            <a href="" id="codex-verify-link" target="_blank" class="btn-secondary" style="width: 100%; margin-bottom: 12px;">
-              Open verification page →
-            </a>
-            <p class="field-hint">⏳ Waiting for authorization...</p>
+          <!-- Instructions state -->
+          <div id="codex-instructions" style="display:none">
+            <div class="info-box" style="margin-bottom: 16px; text-align: left;">
+              <ol style="margin: 0; padding-left: 20px; font-size: 13px; line-height: 1.8;">
+                <li>On your local machine: <code style="background: rgba(0,0,0,0.3); padding: 2px 6px; border-radius: 4px;">npm install -g @openai/codex</code></li>
+                <li>Run: <code style="background: rgba(0,0,0,0.3); padding: 2px 6px; border-radius: 4px;">codex login</code></li>
+                <li>Complete the authentication in your browser</li>
+                <li>Copy contents of <code style="background: rgba(0,0,0,0.3); padding: 2px 6px; border-radius: 4px;">~/.codex/auth.json</code></li>
+                <li>Paste below and click Save</li>
+              </ol>
+            </div>
+            <textarea id="codex-token-input" class="input-field" rows="4" placeholder='Paste contents of ~/.codex/auth.json here...' style="font-family: monospace; font-size: 12px;"></textarea>
+            <button type="button" onclick="saveCodexToken()" class="btn-primary" style="width: 100%; margin-top: 12px;">
+              Save Token
+            </button>
           </div>
 
           <!-- Connected state -->
           <div id="codex-connected" style="display:none">
             <div class="info-box" style="margin-bottom: 16px;">
-              <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-                <path d="M10 2a8 8 0 100 16 8 8 0 000-16z" fill="#00ff87" fill-opacity="0.1"/>
-                <path d="M9 12l-2-2m0 0l2-2m-2 2h6m-6 0a5 5 0 105-5" stroke="#00ff87" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-              </svg>
               <div>
-                <strong>✅ Connected via ChatGPT subscription</strong>
+                <strong style="color: #00ff87;">✅ Connected via ChatGPT subscription</strong>
               </div>
             </div>
             <button type="button" onclick="disconnectCodex()" class="btn-tertiary" style="width: 100%;">

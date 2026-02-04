@@ -559,57 +559,49 @@
   };
 
   // ==============================
-  // Codex CLI Authentication
+  // Codex CLI Authentication (Token Paste)
   // ==============================
-  window.startCodexAuth = async function() {
+  window.showCodexInstructions = function() {
     document.getElementById('codex-not-connected').style.display = 'none';
-    document.getElementById('codex-auth-progress').style.display = 'block';
-
-    try {
-      const res = await fetch('/setup/api/codex/start-auth', { method: 'POST' });
-      const data = await res.json();
-      
-      if (!res.ok || !data.verification_uri) {
-        alert('Failed to start Codex authentication: ' + (data.error || 'Unknown error'));
-        window.resetCodexUI();
-        return;
-      }
-
-      document.getElementById('codex-user-code').textContent = data.user_code;
-      document.getElementById('codex-verify-link').href = data.verification_uri;
-
-      // Poll for completion (Codex will write to ~/.codex/auth.json when complete)
-      window.pollCodexAuth();
-    } catch (err) {
-      alert('Error: ' + err.message);
-      window.resetCodexUI();
-    }
+    document.getElementById('codex-instructions').style.display = 'block';
   };
 
-  window.pollCodexAuth = async function() {
-    const maxAttempts = 60; // 5 minutes
-    let attempts = 0;
-
-    const interval = setInterval(async () => {
-      attempts++;
+  window.saveCodexToken = async function() {
+    const tokenInput = document.getElementById('codex-token-input');
+    const authJson = tokenInput.value.trim();
+    
+    if (!authJson) {
+      alert('Please paste the contents of ~/.codex/auth.json');
+      return;
+    }
+    
+    try {
+      // Validate JSON
+      JSON.parse(authJson);
+    } catch (e) {
+      alert('Invalid JSON format. Please paste the exact contents of auth.json');
+      return;
+    }
+    
+    try {
+      const res = await fetch('/setup/api/codex/save-token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ authJson })
+      });
+      const data = await res.json();
       
-      try {
-        const res = await fetch('/setup/api/codex/status');
-        const data = await res.json();
-
-        if (data.authenticated) {
-          clearInterval(interval);
-          document.getElementById('codex-auth-progress').style.display = 'none';
-          document.getElementById('codex-connected').style.display = 'block';
-        } else if (attempts >= maxAttempts) {
-          clearInterval(interval);
-          alert('Authentication timeout. Please try again.');
-          window.resetCodexUI();
-        }
-      } catch (err) {
-        console.error('Polling error:', err);
+      if (!res.ok || !data.ok) {
+        alert('Failed to save token: ' + (data.error || 'Unknown error'));
+        return;
       }
-    }, 5000); // Check every 5 seconds
+      
+      document.getElementById('codex-instructions').style.display = 'none';
+      document.getElementById('codex-connected').style.display = 'block';
+      tokenInput.value = '';
+    } catch (err) {
+      alert('Error: ' + err.message);
+    }
   };
 
   window.disconnectCodex = async function() {
@@ -625,7 +617,7 @@
 
   window.resetCodexUI = function() {
     document.getElementById('codex-not-connected').style.display = 'block';
-    document.getElementById('codex-auth-progress').style.display = 'none';
+    document.getElementById('codex-instructions').style.display = 'none';
     document.getElementById('codex-connected').style.display = 'none';
   };
 
