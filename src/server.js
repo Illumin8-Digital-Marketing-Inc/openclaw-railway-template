@@ -1643,9 +1643,17 @@ async function startDashboard() {
   if (dashboardProcess) return;
 
   // Setup workspace (clone/pull Gerald repo with memories, skills, etc.)
-  // Disabled for now - can be triggered manually via /api/rebuild-workspace
-  // TODO: Re-enable once stable
-  console.log('[workspace] Workspace auto-setup disabled (use /api/rebuild-workspace to set up manually)');
+  console.log('[workspace] Setting up workspace...');
+  try {
+    const workspaceResult = await setupWorkspace();
+    if (!workspaceResult.ok) {
+      console.warn('[workspace] Setup failed:', workspaceResult.output);
+    } else {
+      console.log('[workspace] Setup complete:', workspaceResult.output);
+    }
+  } catch (err) {
+    console.warn('[workspace] Setup error:', err.message);
+  }
 
   // Always run setup (which pulls latest + rebuilds) before starting
   // Use timeout to prevent blocking forever
