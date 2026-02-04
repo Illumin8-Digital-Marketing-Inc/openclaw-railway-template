@@ -1408,7 +1408,7 @@ async function startDevServer() {
     await runCmd('npm', ['install'], { cwd: DEV_DIR });
   }
 
-  devServerProcess = childProcess.spawn('npx', ['astro', 'dev', '--host', '0.0.0.0', '--port', String(DEV_SERVER_PORT)], {
+  devServerProcess = childProcess.spawn('npm', ['run', 'dev'], {
     cwd: DEV_DIR,
     env: {
       ...process.env,
