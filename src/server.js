@@ -559,6 +559,13 @@ async function restartGateway() {
 }
 
 function requireSetupAuth(req, res, next) {
+  // Skip auth for Gerald subdomain - Dashboard handles its own authentication
+  const clientDomain = getClientDomain();
+  const host = req.hostname?.toLowerCase();
+  if (clientDomain && host === `gerald.${clientDomain}`) {
+    return next();
+  }
+
   if (!SETUP_PASSWORD) {
     return res
       .status(500)
