@@ -1225,7 +1225,8 @@ async function safeRemoveDir(dir) {
   }
 }
 
-async function cloneAndBuild(repoUrl, branch, targetDir, token) {
+async function cloneAndBuild(repoUrl, branch, targetDir, token, opts = {}) {
+  const { keepSource = false } = opts; // For dev server, keep source code
   // Clean target dir (use shell rm -rf to handle node_modules properly)
   await safeRemoveDir(targetDir);
   fs.mkdirSync(targetDir, { recursive: true });
@@ -1344,8 +1345,8 @@ async function cloneAndBuild(repoUrl, branch, targetDir, token) {
       }
     }
 
-    if (outputDir && outputDir !== targetDir) {
-      // Move build output to be the root of targetDir
+    if (outputDir && outputDir !== targetDir && !keepSource) {
+      // Move build output to be the root of targetDir (production optimization)
       // First, move output to a temp location
       const tmpDir = targetDir + '_built';
       await safeRemoveDir(tmpDir);
@@ -1354,6 +1355,10 @@ async function cloneAndBuild(repoUrl, branch, targetDir, token) {
       await safeRemoveDir(targetDir);
       // Move built output to target
       fs.renameSync(tmpDir, targetDir);
+      console.log(`[build] Moved build output to ${targetDir}`);
+    } else if (keepSource) {
+      // Keep source for dev server - build output stays in dist/
+      console.log(`[build] Keeping source code in ${targetDir} (dev mode)`);
     }
 
     console.log(`[build] Build complete: ${targetDir}`);
@@ -2909,7 +2914,7 @@ app.post("/setup/api/run", requireSetupAuth, async (req, res) => {
 
         // Clone development branch and start dev server
         extra += `[build] Cloning dev branch (${devBranch}) for live dev server...\n`;
-        const devResult = await cloneAndBuild(repoUrl, devBranch, DEV_DIR, token);
+        const devResult = await cloneAndBuild(repoUrl, devBranch, DEV_DIR, token, { keepSource: true });
         extra += `[build] Dev: ${devResult.output}\n`;
 
         // Start dev server
