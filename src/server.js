@@ -3501,8 +3501,8 @@ app.use(async (req, res, next) => {
   if (clientDomain) {
     const host = req.hostname?.toLowerCase();
 
-    // Allow webhook and API rebuild endpoints through on any domain
-    if (req.path === '/api/webhook/github' || req.path === '/api/rebuild') {
+    // Allow certain endpoints through on any domain (before subdomain routing)
+    if (req.path === '/api/webhook/github' || req.path === '/api/rebuild' || req.path === '/status') {
       return next();
     }
 
@@ -3531,6 +3531,12 @@ app.use(async (req, res, next) => {
       // Check for dist folder first (source code kept, build output in dist/)
       const devDistDir = path.join(DEV_DIR, 'dist');
       const devStaticDir = fs.existsSync(devDistDir) ? devDistDir : DEV_DIR;
+      console.log(`[dev-routing] Serving static from: ${devStaticDir}`);
+      console.log(`[dev-routing] dist exists: ${fs.existsSync(devDistDir)}, DEV_DIR exists: ${fs.existsSync(DEV_DIR)}`);
+      if (fs.existsSync(devStaticDir)) {
+        const files = fs.readdirSync(devStaticDir).slice(0, 10);
+        console.log(`[dev-routing] Files in ${devStaticDir}: ${files.join(', ')}`);
+      }
       return serveStaticSite(devStaticDir, req, res);
     }
 
