@@ -221,6 +221,15 @@ function getClientDomain() {
 function serveStaticSite(dir, req, res) {
   const reqPath = decodeURIComponent(req.path);
   const filePath = path.join(dir, reqPath === '/' ? 'index.html' : reqPath);
+  
+  // Debug: Log what we're trying to serve
+  if (reqPath === '/' || reqPath === '/index.html') {
+    const indexExists = fs.existsSync(filePath);
+    const dirContents = fs.existsSync(dir) ? fs.readdirSync(dir).slice(0, 10) : [];
+    console.log(`[static] Serving ${reqPath} from ${dir}`);
+    console.log(`[static] Index exists: ${indexExists}, Dir contents: ${dirContents.join(', ')}`);
+  }
+  
   // Prevent directory traversal
   if (!filePath.startsWith(dir)) {
     return res.status(403).send('Forbidden');
@@ -1302,13 +1311,36 @@ async function cloneAndBuild(repoUrl, branch, targetDir, token) {
     }
 
     // Detect output directory (common static site generators)
-    const possibleDirs = ['dist', 'build', 'out', '_site', '.output/public'];
+    // Order matters - check more specific paths first
+    const possibleDirs = [
+      'dist',                    // Astro, Vite, most modern bundlers
+      'dist/client',             // Astro SSR
+      '.vercel/output/static',   // Vercel adapter
+      '.output/public',          // Nitro/Nuxt
+      'build',                   // Create React App, Gatsby
+      'out',                     // Next.js static export
+      '_site',                   // Jekyll, Eleventy
+      'public',                  // Hugo, some others (check last - might be source)
+    ];
     let outputDir = null;
     for (const dir of possibleDirs) {
       const fullPath = path.join(targetDir, dir);
-      if (fs.existsSync(fullPath) && fs.statSync(fullPath).isDirectory()) {
+      // Must have index.html to be considered a valid build output
+      if (fs.existsSync(fullPath) && fs.existsSync(path.join(fullPath, 'index.html'))) {
         outputDir = fullPath;
+        console.log(`[build] Found output directory: ${dir}`);
         break;
+      }
+    }
+    // Fallback: just check if directory exists without requiring index.html
+    if (!outputDir) {
+      for (const dir of possibleDirs) {
+        const fullPath = path.join(targetDir, dir);
+        if (fs.existsSync(fullPath) && fs.statSync(fullPath).isDirectory()) {
+          outputDir = fullPath;
+          console.log(`[build] Found output directory (no index.html): ${dir}`);
+          break;
+        }
       }
     }
 
