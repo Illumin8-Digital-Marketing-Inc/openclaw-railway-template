@@ -189,6 +189,7 @@
       clientName: document.getElementById('clientName').value,
       guardrailLevel: document.getElementById('guardrailLevel').value,
       githubRepo: document.getElementById('github-repo-select').value,
+      workspaceRepo: document.getElementById('workspace-repo-select').value,
       githubToken: '', // OAuth token is stored separately in github-oauth.json
       prodBranch: document.getElementById('prodBranch').value || 'main',
       devBranch: document.getElementById('devBranch').value || 'development',
@@ -488,19 +489,38 @@
         return;
       }
       
-      const select = document.getElementById('github-repo-select');
-      select.innerHTML = '<option value="">Select a repository...</option>';
+      // Populate website repo dropdown
+      const siteSelect = document.getElementById('github-repo-select');
+      siteSelect.innerHTML = '<option value="">Select a repository...</option>';
+      
+      // Populate workspace repo dropdown
+      const workspaceSelect = document.getElementById('workspace-repo-select');
+      workspaceSelect.innerHTML = '<option value="">None (use default: illumin8ca/gerald)</option>';
       
       data.repos.forEach(function(repo) {
-        var opt = document.createElement('option');
-        opt.value = repo.full_name;
-        opt.textContent = repo.full_name + (repo.private ? ' 🔒' : '');
-        select.appendChild(opt);
+        // Add to site select
+        var opt1 = document.createElement('option');
+        opt1.value = repo.full_name;
+        opt1.textContent = repo.full_name + (repo.private ? ' 🔒' : '');
+        siteSelect.appendChild(opt1);
+        
+        // Add to workspace select
+        var opt2 = document.createElement('option');
+        opt2.value = 'https://github.com/' + repo.full_name;
+        opt2.textContent = repo.full_name + (repo.private ? ' 🔒' : '');
+        workspaceSelect.appendChild(opt2);
       });
       
-      // Pre-select gerald-dashboard if exists
-      var gerald = data.repos.find(function(r) { return r.full_name.includes('gerald-dashboard'); });
-      if (gerald) select.value = gerald.full_name;
+      // Pre-select repos that match common patterns
+      var siteRepo = data.repos.find(function(r) { 
+        return r.full_name.includes('-site') || r.full_name.includes('-website') || r.full_name.includes('-web');
+      });
+      if (siteRepo) siteSelect.value = siteRepo.full_name;
+      
+      var workspaceRepo = data.repos.find(function(r) { 
+        return r.full_name.includes('gerald') && !r.full_name.includes('dashboard');
+      });
+      if (workspaceRepo) workspaceSelect.value = 'https://github.com/' + workspaceRepo.full_name;
     } catch (err) {
       alert('Failed to load repos: ' + err.message);
     }
