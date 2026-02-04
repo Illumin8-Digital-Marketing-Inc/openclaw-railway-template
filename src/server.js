@@ -349,7 +349,7 @@ function sleep(ms) {
 }
 
 async function waitForGatewayReady(opts = {}) {
-  const timeoutMs = opts.timeoutMs ?? 20_000;
+  const timeoutMs = opts.timeoutMs ?? 300_000; // 5 minutes default - initial setup can be slow
   const start = Date.now();
   const endpoints = ["/openclaw", "/openclaw", "/", "/health"];
 
@@ -516,9 +516,10 @@ async function ensureGatewayRunning() {
   if (!gatewayStarting) {
     gatewayStarting = (async () => {
       await startGateway();
-      const ready = await waitForGatewayReady({ timeoutMs: 20_000 });
+      // Give gateway up to 5 minutes to start (initial setup can be slow)
+      const ready = await waitForGatewayReady({ timeoutMs: 300_000 });
       if (!ready) {
-        throw new Error("Gateway did not become ready in time");
+        throw new Error("Gateway did not become ready in time (5 min timeout)");
       }
     })().finally(() => {
       gatewayStarting = null;
