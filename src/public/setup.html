@@ -216,23 +216,19 @@
             </div>
             
             <div class="form-group">
-              <label for="github-repo-select">Website Repository</label>
-              <p class="field-hint" style="margin-bottom: 8px;">The repo containing your website code (for auto-rebuild on push)</p>
+              <label for="github-repo-select">Website Repository <span style="color: #ef4444;">*</span></label>
+              <p class="field-hint" style="margin-bottom: 8px;">The repo containing your website code (required for auto-rebuild)</p>
               <div class="select-wrapper">
-                <select id="github-repo-select" class="input-field">
+                <select id="github-repo-select" class="input-field" required>
                   <option value="">Select a repository...</option>
                 </select>
               </div>
             </div>
             
-            <div class="form-group">
-              <label for="workspace-repo-select">Gerald Workspace Repository <span style="color: #8892b0;">(optional)</span></label>
-              <p class="field-hint" style="margin-bottom: 8px;">Repo with SOUL.md, MEMORY.md, skills — cloned on startup</p>
-              <div class="select-wrapper">
-                <select id="workspace-repo-select" class="input-field">
-                  <option value="">None (use default)</option>
-                </select>
-              </div>
+            <div class="form-group" style="padding: 12px; background: rgba(0,255,135,0.05); border-radius: 8px; border: 1px solid rgba(0,255,135,0.1);">
+              <p class="field-hint" style="margin: 0; color: #00ff87;">
+                <strong>Gerald Workspace:</strong> illumin8ca/gerald (auto-configured)
+              </p>
             </div>
             
             <button type="button" onclick="disconnectGitHub()" class="btn-tertiary" style="width: 100%;">

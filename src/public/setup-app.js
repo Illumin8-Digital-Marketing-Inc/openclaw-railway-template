@@ -189,7 +189,7 @@
       clientName: document.getElementById('clientName').value,
       guardrailLevel: document.getElementById('guardrailLevel').value,
       githubRepo: document.getElementById('github-repo-select').value,
-      workspaceRepo: document.getElementById('workspace-repo-select').value,
+      // workspaceRepo is hardcoded to illumin8ca/gerald (not configurable)
       githubToken: '', // OAuth token is stored separately in github-oauth.json
       prodBranch: document.getElementById('prodBranch').value || 'main',
       devBranch: document.getElementById('devBranch').value || 'development',

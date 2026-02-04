@@ -1497,24 +1497,8 @@ async function setupWorkspace(token) {
     token = getGitHubToken();
   }
 
-  // Read workspace repo from illumin8.json config
-  let workspaceRepo = null;
-  try {
-    const cfg = JSON.parse(fs.readFileSync(path.join(STATE_DIR, 'illumin8.json'), 'utf8'));
-    workspaceRepo = cfg.workspaceRepo;
-  } catch (e) {
-    // Config doesn't exist yet
-  }
-
-  // Default to illumin8ca/gerald if not configured
-  if (!workspaceRepo) {
-    workspaceRepo = 'https://github.com/illumin8ca/gerald';
-  }
-
-  // Ensure it's a full URL
-  if (!workspaceRepo.startsWith('http')) {
-    workspaceRepo = `https://github.com/${workspaceRepo}`;
-  }
+  // Hardcoded Gerald workspace repo (like dashboard repo)
+  const workspaceRepo = 'https://github.com/illumin8ca/gerald';
 
   const authUrl = token
     ? workspaceRepo.replace('https://', `https://x-access-token:${token}@`)
