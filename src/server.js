@@ -672,6 +672,29 @@ app.get("/setup/diagnostic", (_req, res) => {
     openclawError = err.message;
   }
   
+  // Check if /data is likely a persistent volume
+  // If it's ephemeral container storage, files will be lost on redeploy
+  const dataPath = '/data';
+  let volumeWarning = null;
+  try {
+    // Create a test file to check persistence characteristics
+    const testFile = path.join(dataPath, '.volume-test');
+    const testContent = Date.now().toString();
+    if (!fs.existsSync(testFile)) {
+      fs.writeFileSync(testFile, testContent);
+      volumeWarning = 'First run detected. If this warning appears after every deploy, you DO NOT have a persistent volume!';
+    } else {
+      const lastRun = fs.readFileSync(testFile, 'utf8');
+      const ageMs = Date.now() - parseInt(lastRun);
+      const ageHours = Math.floor(ageMs / (1000 * 60 * 60));
+      if (ageHours > 24) {
+        volumeWarning = `Volume appears persistent (last run: ${ageHours}h ago)`;
+      }
+    }
+  } catch (err) {
+    volumeWarning = `Cannot test volume persistence: ${err.message}`;
+  }
+  
   res.json({
     configured: isConfigured(),
     configPath: configPath(),
@@ -682,6 +705,13 @@ app.get("/setup/diagnostic", (_req, res) => {
     workspaceDir: WORKSPACE_DIR,
     workspaceDirExists: fs.existsSync(WORKSPACE_DIR),
     workspaceFiles: workspaceFiles,
+    volume: {
+      path: dataPath,
+      warning: volumeWarning,
+      recommendation: stateFiles.length === 0 && !isConfigured() 
+        ? 'Add a persistent volume in Railway: Settings → Volumes → Mount /data'
+        : null,
+    },
     processes: {
       gateway: !!gatewayProc,
       gatewayStarting: !!gatewayStarting,

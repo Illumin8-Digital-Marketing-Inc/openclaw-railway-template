@@ -1,3 +1,15 @@
+# Gerald Railway Template
+# 
+# CRITICAL: You MUST add a persistent volume to preserve configuration between deployments
+# 
+# To add a volume in Railway:
+# 1. Go to your service → Settings → Volumes
+# 2. Click "New Volume"
+# 3. Mount Path: /data
+# 4. Size: 1GB (minimum)
+# 
+# Without a volume, you'll lose all configuration on every deploy!
+
 [build]
 builder = "dockerfile"
 
