@@ -357,8 +357,24 @@ function configPath() {
 
 function isConfigured() {
   try {
-    return fs.existsSync(configPath());
-  } catch {
+    const path = configPath();
+    const exists = fs.existsSync(path);
+    if (!exists) {
+      console.log(`[isConfigured] Config file NOT found at: ${path}`);
+      // Check if STATE_DIR exists
+      if (!fs.existsSync(STATE_DIR)) {
+        console.log(`[isConfigured] STATE_DIR does not exist: ${STATE_DIR}`);
+      } else {
+        console.log(`[isConfigured] STATE_DIR exists, listing contents:`);
+        const files = fs.readdirSync(STATE_DIR);
+        console.log(`[isConfigured] Files in STATE_DIR: ${files.join(', ') || '(empty)'}`);
+      }
+    } else {
+      console.log(`[isConfigured] Config file found at: ${path}`);
+    }
+    return exists;
+  } catch (err) {
+    console.error(`[isConfigured] Error checking config: ${err.message}`);
     return false;
   }
 }
@@ -624,10 +640,41 @@ app.use(cookieParser());
 // Minimal health endpoint for Railway.
 app.get("/setup/healthz", (_req, res) => res.json({ ok: true }));
 
-// Public status endpoint - shows what's happening without auth
-app.get("/status", (_req, res) => {
+// Diagnostic endpoint - no auth required
+app.get("/setup/diagnostic", (_req, res) => {
+  const stateFiles = fs.existsSync(STATE_DIR) ? fs.readdirSync(STATE_DIR) : [];
+  const workspaceFiles = fs.existsSync(WORKSPACE_DIR) ? fs.readdirSync(WORKSPACE_DIR).slice(0, 20) : [];
+  
   res.json({
     configured: isConfigured(),
+    configPath: configPath(),
+    configExists: fs.existsSync(configPath()),
+    stateDir: STATE_DIR,
+    stateDirExists: fs.existsSync(STATE_DIR),
+    stateFiles: stateFiles,
+    workspaceDir: WORKSPACE_DIR,
+    workspaceDirExists: fs.existsSync(WORKSPACE_DIR),
+    workspaceFiles: workspaceFiles,
+    env: {
+      hasSetupPassword: !!process.env.SETUP_PASSWORD,
+      hasDefaultModel: !!process.env.DEFAULT_MODEL,
+      hasMoonshotKey: !!process.env.MOONSHOT_API_KEY,
+      hasClientDomain: !!process.env.CLIENT_DOMAIN,
+      hasCloudflareKey: !!process.env.CLOUDFLARE_API_KEY,
+    },
+    timestamp: new Date().toISOString(),
+  });
+});
+
+// Public status endpoint - shows what's happening without auth
+app.get("/status", (_req, res) => {
+  const stateFiles = fs.existsSync(STATE_DIR) ? fs.readdirSync(STATE_DIR) : [];
+  res.json({
+    configured: isConfigured(),
+    configPath: configPath(),
+    stateDir: STATE_DIR,
+    stateDirExists: fs.existsSync(STATE_DIR),
+    stateFiles: stateFiles,
     dashboard: {
       running: !!dashboardProcess,
       installed: fs.existsSync(path.join(DASHBOARD_DIR, 'package.json')),
