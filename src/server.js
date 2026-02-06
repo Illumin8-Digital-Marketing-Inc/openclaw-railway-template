@@ -638,7 +638,20 @@ app.use(express.json({ limit: "1mb" }));
 app.use(cookieParser());
 
 // Minimal health endpoint for Railway.
-app.get("/setup/healthz", (_req, res) => res.json({ ok: true }));
+app.get("/setup/healthz", (_req, res) => {
+  // Railway health check endpoint - MUST respond quickly
+  const health = {
+    ok: true,
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+    configured: isConfigured(),
+    processes: {
+      gateway: !!gatewayProc,
+      dashboard: !!dashboardProcess,
+    }
+  };
+  res.json(health);
+});
 
 // Diagnostic endpoint - no auth required
 app.get("/setup/diagnostic", (_req, res) => {
@@ -4048,30 +4061,40 @@ process.on('SIGINT', async () => {
   process.exit(0);
 });
 
-const server = app.listen(PORT, async () => {
+const server = app.listen(PORT, () => {
+  console.log(`[wrapper] ========== SERVER STARTED ==========`);
   console.log(`[wrapper] listening on port ${PORT}`);
   console.log(`[wrapper] setup wizard: http://localhost:${PORT}/setup`);
   console.log(`[wrapper] configured: ${isConfigured()}`);
+  console.log(`[wrapper] health check: http://localhost:${PORT}/setup/healthz`);
+  console.log(`[wrapper] diagnostic: http://localhost:${PORT}/setup/diagnostic`);
 
-  // Auto-start the gateway so Telegram/Discord polling begins immediately
-  // instead of waiting for the first inbound HTTP request.
+  // CRITICAL: Don't await anything in the listen callback
+  // Railway health checks need immediate responses or it returns 503
+  
+  // Auto-start the gateway in background (don't block server startup)
   if (isConfigured()) {
-    console.log(`[wrapper] auto-starting gateway...`);
-    try {
-      await ensureGatewayRunning();
-      console.log(`[wrapper] gateway auto-started successfully`);
-    } catch (err) {
-      console.error(`[wrapper] gateway auto-start failed: ${err.message}`);
-    }
+    console.log(`[wrapper] auto-starting gateway in background...`);
+    ensureGatewayRunning()
+      .then(() => console.log(`[wrapper] ✓ gateway auto-started successfully`))
+      .catch(err => console.error(`[wrapper] ✗ gateway auto-start failed: ${err.message}`));
+  } else {
+    console.log(`[wrapper] not configured - run /setup to configure`);
   }
 
-  // Start dashboard if installed
-  startDashboard().catch(err => console.error('[dashboard] Auto-start failed:', err));
+  // Start dashboard if installed (background)
+  startDashboard()
+    .then(() => console.log('[dashboard] ✓ auto-started'))
+    .catch(err => console.error('[dashboard] ✗ auto-start failed:', err.message));
 
-  // Start dev server if dev site has been cloned
+  // Start dev server if dev site has been cloned (background)
   if (fs.existsSync(path.join(DEV_DIR, 'package.json'))) {
-    startDevServer().catch(err => console.error('[dev-server] Auto-start failed:', err));
+    startDevServer()
+      .then(() => console.log('[dev-server] ✓ auto-started'))
+      .catch(err => console.error('[dev-server] ✗ auto-start failed:', err.message));
   }
+
+  console.log(`[wrapper] ========== STARTUP COMPLETE ==========`);
 });
 
 // Critical: Increase server timeouts for AI streaming (5 minutes)
@@ -4081,6 +4104,26 @@ server.keepAliveTimeout = 300000; // 5 minutes
 server.headersTimeout = 301000; // Slightly longer than keepAliveTimeout
 
 console.log(`[wrapper] Server timeouts set: timeout=${server.timeout}ms, keepAliveTimeout=${server.keepAliveTimeout}ms`);
+
+// Handle server errors
+server.on('error', (err) => {
+  console.error('[wrapper] ✗ Server error:', err);
+  if (err.code === 'EADDRINUSE') {
+    console.error(`[wrapper] Port ${PORT} is already in use!`);
+    process.exit(1);
+  }
+});
+
+// Handle uncaught exceptions
+process.on('uncaughtException', (err) => {
+  console.error('[wrapper] ✗ Uncaught exception:', err);
+  // Don't exit - let Railway restart if needed
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('[wrapper] ✗ Unhandled promise rejection:', reason);
+  // Don't exit - log and continue
+});
 
 // Handle WebSocket upgrades
 server.on("upgrade", async (req, socket, head) => {
