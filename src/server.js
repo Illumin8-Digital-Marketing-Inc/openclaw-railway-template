@@ -1750,14 +1750,14 @@ function isProdSSR() {
   return fs.existsSync(path.join(PRODUCTION_DIR, 'dist', 'server', 'entry.mjs'));
 }
 
-async function startProdServer() {
+async function startProdServer(retryCount = 0) {
   if (prodServerProcess) return;
   if (!isProdSSR()) {
     console.log('[prod-server] Not an SSR site, skipping');
     return;
   }
   
-  console.log(`[prod-server] Starting SSR server on port ${PROD_SERVER_PORT}...`);
+  console.log(`[prod-server] Starting SSR server on port ${PROD_SERVER_PORT}... (attempt ${retryCount + 1})`);
 
   // Kill any stale processes - try multiple methods since containers vary
   try {
@@ -1765,9 +1765,7 @@ async function startProdServer() {
     childProcess.execSync(`pkill -f 'entry.mjs' 2>/dev/null || true`);
     // Method 2: Try fuser if available
     childProcess.execSync(`fuser -k ${PROD_SERVER_PORT}/tcp 2>/dev/null || true`);
-    // Method 3: Kill by port using ss + awk
-    childProcess.execSync(`ss -tlnp | grep ':${PROD_SERVER_PORT}' | awk '{print $NF}' | grep -o '[0-9]*' | xargs -r kill -9 2>/dev/null || true`);
-    await new Promise(r => setTimeout(r, 1000));
+    await new Promise(r => setTimeout(r, 2000));
   } catch {}
 
   // Get client domain for SITE_URL
@@ -1808,7 +1806,14 @@ async function startProdServer() {
       }
     } catch {}
   }
-  console.warn('[prod-server] Timed out waiting for SSR server to start');
+  // If we timed out and have retries left, try again
+  if (retryCount < 2) {
+    console.warn('[prod-server] Failed to start, retrying in 5 seconds...');
+    prodServerProcess = null;
+    await new Promise(r => setTimeout(r, 5000));
+    return startProdServer(retryCount + 1);
+  }
+  console.warn('[prod-server] Timed out waiting for SSR server to start after retries');
 }
 
 function stopProdServer() {
@@ -4268,10 +4273,13 @@ const server = app.listen(PORT, () => {
   }
 
   // Start production SSR server if site is SSR (background)
+  // Delay by 5 seconds to allow any stale processes to fully terminate
   if (isProdSSR()) {
-    startProdServer()
-      .then(() => console.log('[prod-server] ✓ auto-started'))
-      .catch(err => console.error('[prod-server] ✗ auto-start failed:', err.message));
+    setTimeout(() => {
+      startProdServer()
+        .then(() => console.log('[prod-server] ✓ auto-started'))
+        .catch(err => console.error('[prod-server] ✗ auto-start failed:', err.message));
+    }, 5000);
   }
 
   console.log(`[wrapper] ========== STARTUP COMPLETE ==========`);
