@@ -24,19 +24,22 @@ Description: Persistent storage for Gerald configuration and workspace
 
 ### Step 4: Configure Environment Variables
 
-**Required:**
-- `SETUP_PASSWORD` - User-provided password to access /setup
+**✅ ALREADY SET AS RAILWAY SHARED VARIABLES:**
+All required variables are now shared across all deployments:
+- `GITHUB_TOKEN` - For dashboard updates + webhooks
+- `DEFAULT_MODEL` - AI model (moonshot/kimi-k2.5)
+- `MOONSHOT_API_KEY` - API key for fallback model
+- `SENDGRID_API_KEY` - Email service for magic links
+- `CLOUDFLARE_API_KEY` - DNS automation
+- `CLOUDFLARE_EMAIL` - Cloudflare account email
+- `SETUP_PASSWORD` - Standard setup password
 
-**Pre-configured (already in railway.toml):**
-- `PORT = 8080`
-- `GITHUB_TOKEN` - Pre-filled GitHub PAT
-- `DEFAULT_MODEL = moonshot/kimi-k2.5`
-- `MOONSHOT_API_KEY` - Pre-filled Moonshot API key
-
-**Optional (user can add during deploy):**
+**User Must Provide (Per-Deployment):**
 - `CLIENT_DOMAIN` - Their domain (e.g., solarwyse.ca)
-- `CLOUDFLARE_API_KEY` - Their Cloudflare API key
-- `CLOUDFLARE_EMAIL` - Their Cloudflare email
+
+**Optional (Auto-Defaults):**
+- `SENDGRID_SENDER_EMAIL` - Defaults to `noreply@CLIENT_DOMAIN`
+- `PORT` - Defaults to 8080
 
 ### Step 5: Set Health Check
 - Path: `/setup/healthz`
