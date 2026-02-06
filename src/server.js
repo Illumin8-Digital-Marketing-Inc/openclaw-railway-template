@@ -1759,24 +1759,19 @@ async function startProdServer() {
   
   console.log(`[prod-server] Starting SSR server on port ${PROD_SERVER_PORT}...`);
 
-  // Kill any stale processes on our port first
+  // Kill any stale processes on our port first (use fuser since lsof isn't always available)
   try {
-    const lsof = childProcess.execSync(`lsof -ti:${PROD_SERVER_PORT} 2>/dev/null || true`).toString().trim();
-    if (lsof) {
-      console.log(`[prod-server] Killing stale process on port ${PROD_SERVER_PORT}: ${lsof}`);
-      childProcess.execSync(`kill -9 ${lsof} 2>/dev/null || true`);
-      await new Promise(r => setTimeout(r, 500));
-    }
+    childProcess.execSync(`fuser -k ${PROD_SERVER_PORT}/tcp 2>/dev/null || true`);
+    await new Promise(r => setTimeout(r, 500));
   } catch {}
 
   // Get client domain for SITE_URL
   const clientDomain = getClientDomain();
   const siteUrl = clientDomain ? `https://${clientDomain}` : `http://localhost:${PROD_SERVER_PORT}`;
 
-  // Start the Astro SSR server via start-server.js or dist/server/entry.mjs
-  const startScript = fs.existsSync(path.join(PRODUCTION_DIR, 'start-server.js'))
-    ? 'start-server.js'
-    : 'dist/server/entry.mjs';
+  // Start the Astro SSR server directly from dist/server/entry.mjs
+  // (Don't use start-server.js as it may run dev mode instead of production)
+  const startScript = 'dist/server/entry.mjs';
 
   prodServerProcess = childProcess.spawn('node', [startScript], {
     cwd: PRODUCTION_DIR,
