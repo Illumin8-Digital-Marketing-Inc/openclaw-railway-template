@@ -2016,6 +2016,9 @@ app.post('/setup/api/github/poll-auth', requireSetupAuth, async (req, res) => {
       if (data.error === 'authorization_pending') {
         return res.json({ status: 'pending' });
       }
+      if (data.error === 'slow_down') {
+        return res.json({ status: 'slow_down', error: 'slow_down' });
+      }
       return res.json({ status: 'error', error: data.error });
     }
 
@@ -2230,6 +2233,9 @@ app.post('/api/github/poll-auth', requireSetupAuth, async (req, res) => {
     if (data.error) {
       if (data.error === 'authorization_pending') {
         return res.json({ status: 'pending' });
+      }
+      if (data.error === 'slow_down') {
+        return res.json({ status: 'slow_down', error: 'slow_down' });
       }
       return res.json({ status: 'error', error: data.error });
     }

@@ -451,6 +451,7 @@
   // ── GitHub OAuth Device Flow ──────────────────────────────────────────
   window.deviceCode = null;
   window.pollInterval = null;
+  window.pollIntervalMs = 5000; // Default 5 seconds, increased if GitHub says slow_down
 
   window.startGitHubAuth = async function() {
     document.getElementById('github-not-connected').style.display = 'none';
@@ -461,10 +462,11 @@
       const data = await res.json();
       
       window.deviceCode = data.device_code;
+      window.pollIntervalMs = (data.interval || 5) * 1000;
       document.getElementById('github-user-code').textContent = data.user_code;
       
-      // Start polling
-      window.pollInterval = setInterval(window.pollGitHubAuth, (data.interval || 5) * 1000);
+      // Start polling with GitHub's recommended interval
+      window.pollInterval = setInterval(window.pollGitHubAuth, window.pollIntervalMs);
     } catch (err) {
       alert('Failed to start GitHub auth: ' + err.message);
       window.resetGitHubUI();
@@ -484,6 +486,12 @@
         clearInterval(window.pollInterval);
         window.showConnectedState(data.username);
         window.loadRepos();
+      } else if (data.error === 'slow_down') {
+        // GitHub rate limit - increase polling interval by 5 seconds and restart
+        clearInterval(window.pollInterval);
+        window.pollIntervalMs += 5000;
+        console.log('[github-auth] Slowing down: new interval = ' + (window.pollIntervalMs / 1000) + 's');
+        window.pollInterval = setInterval(window.pollGitHubAuth, window.pollIntervalMs);
       } else if (data.error && data.error !== 'authorization_pending') {
         clearInterval(window.pollInterval);
         alert('Authorization failed: ' + data.error);
