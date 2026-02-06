@@ -786,12 +786,31 @@ app.get("/setup", requireSetupAuth, (_req, res) => {
 // ── Auth Endpoints ─────────────────────────────────────────────────────────
 // Wrapper auth removed - Dashboard handles its own authentication
 
+// Cache openclaw version to avoid repeated subprocess spawns on every page load
+let cachedOpenClawVersion = null;
+async function getOpenClawVersion() {
+  if (!cachedOpenClawVersion) {
+    try {
+      const result = await runCmd(OPENCLAW_NODE, clawArgs(["--version"]));
+      cachedOpenClawVersion = result.output.trim();
+    } catch (err) {
+      cachedOpenClawVersion = 'unknown';
+    }
+  }
+  return cachedOpenClawVersion;
+}
+
+// Performance tracking
+function perfLog(label) {
+  const now = Date.now();
+  if (!perfLog.start) perfLog.start = now;
+  const elapsed = now - perfLog.start;
+  console.log(`[perf] ${label}: ${elapsed}ms`);
+}
+perfLog.start = null;
+
 app.get("/setup/api/status", requireSetupAuth, async (_req, res) => {
-  const version = await runCmd(OPENCLAW_NODE, clawArgs(["--version"]));
-  const channelsHelp = await runCmd(
-    OPENCLAW_NODE,
-    clawArgs(["channels", "add", "--help"]),
-  );
+  const version = await getOpenClawVersion();
 
   // We reuse Openclaw's own auth-choice grouping logic indirectly by hardcoding the same group defs.
   // This is intentionally minimal; later we can parse the CLI help output to stay perfectly in sync.
@@ -912,8 +931,7 @@ app.get("/setup/api/status", requireSetupAuth, async (_req, res) => {
   res.json({
     configured: isConfigured(),
     gatewayTarget: GATEWAY_TARGET,
-    openclawVersion: version.output.trim(),
-    channelsAddHelp: channelsHelp.output,
+    openclawVersion: version,
     authGroups,
     defaultAuthGroup: process.env.DEFAULT_MODEL?.includes('moonshot') ? 'moonshot' : null,
     defaultAuthChoice: process.env.DEFAULT_MODEL?.includes('moonshot') ? 'moonshot-api-key' : null,
@@ -2817,6 +2835,9 @@ app.post('/setup/api/claude/disconnect', requireSetupAuth, async (req, res) => {
 });
 
 app.post("/setup/api/run", requireSetupAuth, async (req, res) => {
+  perfLog.start = Date.now();
+  perfLog('[setup] Start');
+  
   try {
     if (isConfigured()) {
       await ensureGatewayRunning();
@@ -2829,6 +2850,7 @@ app.post("/setup/api/run", requireSetupAuth, async (req, res) => {
 
     fs.mkdirSync(STATE_DIR, { recursive: true });
     fs.mkdirSync(WORKSPACE_DIR, { recursive: true });
+    perfLog('[setup] Directories created');
 
     const payload = req.body || {};
     const onboardArgs = buildOnboardArgs(payload);
