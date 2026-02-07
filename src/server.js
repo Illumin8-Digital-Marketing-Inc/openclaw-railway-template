@@ -4145,6 +4145,218 @@ app.use(async (req, res, next) => {
 
     // Production site: clientdomain.com or www.clientdomain.com
     if (host === clientDomain || host === `www.${clientDomain}`) {
+      // Serve llms.txt - tells LLMs what the site is about
+      if (req.path === '/llms.txt') {
+        res.type('text/plain; charset=utf-8');
+        return res.send(`# Cass & Kathryn Morrow - Marriage Coaching
+
+> Marriage coaching for men and women in crisis. We've helped 5,600+ couples save their marriages through The Marriage Reset (for men) and The White Picket Fence Project (for women). We specialize in sexless marriages, constant conflict, and emotional disconnection—even when only one spouse is willing to do the work.
+
+Cass & Kathryn survived extreme marital crisis (abuse, 7 separations, restraining order, 2 divorce lawyers) and created a proven methodology that transforms marriages at the identity level—not through communication tips, but through deep personal transformation. Their programs have a 23% acceptance rate (selective, high-commitment only).
+
+## Programs
+
+- [The Marriage Reset](/men): For men ready to lead - Transform yourself at the identity level and become the man she can't help but respect and desire
+- [The White Picket Fence Project](/women): For women ready to transform - Stop exhausting yourself, reclaim your identity, and require the partnership you deserve
+- [Free Training](/free-training): High-level training covering automatic turn-offs, why marriages fail, and real conflict resolution examples
+
+## Resources
+
+- [Success Stories](/#success-stories): Real transformations from couples on the brink of divorce
+- [FAQ](/#faq): Common questions about saving marriages, sexless relationships, and the coaching process
+
+## Contact
+
+- Website: https://cassandkathryn.com
+- Services: Marriage coaching for men and women (separate programs)
+- Specialty: Sexless marriages, conflict resolution, one-spouse transformation
+- Results: 6-12 months typical transformation timeframe
+`);
+      }
+
+      // Serve llms-full.txt - extended version with more details
+      if (req.path === '/llms-full.txt') {
+        res.type('text/plain; charset=utf-8');
+        return res.send(`# Cass & Kathryn Morrow - Marriage Coaching (Full Documentation)
+
+> Marriage coaching for men and women in crisis. We've helped 5,600+ couples save their marriages through The Marriage Reset (for men) and The White Picket Fence Project (for women). We specialize in sexless marriages, constant conflict, and emotional disconnection—even when only one spouse is willing to do the work.
+
+## About Cass & Kathryn
+
+Cass and Kathryn Morrow are marriage coaches who survived extreme marital crisis to build a thriving relationship and now help others do the same. Their background includes:
+
+- Emotional, physical, and sexual abuse
+- Restraining order
+- 7 separations
+- 2 divorce lawyers
+- 1 year of probation
+
+From this foundation, they created a unique coaching methodology that has helped 5,600+ marriages transform. Their approach is different from traditional marriage counseling:
+
+**Key Differentiators:**
+- Focus on identity transformation, not communication techniques
+- Only ONE spouse needs to participate (though both benefit)
+- Addresses the root cause of marital breakdown, not just symptoms
+- Selective acceptance (23% acceptance rate) - only works with committed individuals
+- Results-driven: most couples see transformation in 6-12 months
+
+## Programs & Services
+
+### The Marriage Reset (For Men)
+
+**Target Audience:** Men whose wives have checked out, stopped having sex, or mentioned divorce
+
+**Core Premise:** Stop waiting for your wife to change. Become the man she can't help but respect and desire through identity-level transformation.
+
+**What It's Not:**
+- Not communication tips or date night advice
+- Not manipulation tactics
+- Not "happy wife, happy life" people-pleasing
+
+**What It Is:**
+- Deep work on who you are as a man, leader, and husband
+- Learning to lead with strength and presence
+- Becoming someone your wife naturally responds to (not because you manipulated, but because you're undeniable)
+
+**Results:**
+- Men report their wives initiating intimacy again after years of rejection
+- Nasty fights transform into peaceful connection
+- Wives who were "done" suddenly re-engage
+
+### The White Picket Fence Project (For Women)
+
+**Target Audience:** Women exhausting themselves trying to hold their marriage together
+
+**Core Premise:** Stop enabling bad behavior and reclaim your identity. Become the woman who creates transformation—with or without his participation.
+
+**Key Concepts:**
+- Set boundaries and stop doing all the emotional labor
+- Require the partnership you deserve
+- Transform yourself (which often transforms the marriage)
+- Take your power back
+
+**What It Addresses:**
+- Women who feel like roommates, not partners
+- Constant fighting and defensiveness
+- Carrying all the mental/emotional load
+- Husbands who have checked out or won't participate in counseling
+
+### Free Training
+
+High-level training available without commitment. Covers:
+
+- **Automatic Turn-Offs:** From conversations to intimacy—what's killing attraction without you realizing it
+- **Why This Is Happening:** The real reason marriages die (not what traditional counseling says)
+- **Secret Recording:** Live training from Cass & Kathryn showing real conflict resolution
+
+## Common Situations They Address
+
+### Sexless Marriage
+- It's been months or years since intimacy
+- When sex happens, it feels like a chore
+- Your spouse isn't "just not sexual"—they're not having sex with YOU because they don't feel safe/respected/desired
+
+**Their Approach:** Transform who you are → intimacy returns as genuine desire, not transaction
+
+### You're Roommates, Not Partners
+- Co-parent, split bills, sleep in the same bed
+- No connection, no spark
+- Parallel lives
+
+**Their Approach:** Identity transformation creates natural attraction and connection
+
+### Constant Fighting
+- Every conversation becomes conflict
+- Always defending yourself
+- Nastiness that never stops
+
+**Their Approach:** Learn to lead/set boundaries from a place of strength, not reactivity
+
+### Spouse Has Checked Out
+- They've mentioned divorce
+- Emotionally gone
+- May be seeing someone else
+
+**Their Approach:** Transform yourself to become undeniable (they respond to who you are, not what you say)
+
+### Traditional Therapy Failed
+- Tried therapy, books, date nights, love languages
+- Nothing worked
+
+**Why Their Approach Works:** Addresses identity, not surface-level behaviors
+
+## Philosophy & Methodology
+
+**Core Belief:** You can't fix a marriage by working on the marriage. You fix it by becoming a different person. When you change, the marriage changes with you.
+
+**Why Only One Spouse Needs to Participate:**
+- Most couples start with only one person willing to work
+- When you transform at the identity level—who you are, how you show up, how you lead—your spouse responds
+- Not because you manipulated them, but because you became someone they can't help but respond to
+- You don't need their permission to become undeniable
+
+**Selective Acceptance (23% Rate):**
+- Only work with people serious about transformation
+- Not looking for quick fixes or victim validation
+- Committed to doing the deep work
+- If accepted, you're in a room with people who refuse to settle
+
+## Results & Timeframe
+
+**Typical Transformation:** 6-12 months for significant results
+
+**Early Indicators:** Some men notice shifts in their wives within WEEKS
+
+**Success Metrics:**
+- 5,600+ marriages saved
+- Couples who were filing for divorce ripping up papers
+- Women initiating intimacy after 7+ years of rejection
+- Nasty conflicts transforming into peaceful connection
+- Emotional disconnection becoming genuine partnership
+
+## Featured In
+
+Media coverage includes:
+- Maxim
+- Forbes Brunei
+- Los Angeles Magazine
+- LA Weekly
+- Multiple podcast interviews (Chris Voss Show, DreamCatchers, The Success Mindset Show)
+
+## Who This Is NOT For
+
+- People looking for quick fixes
+- Those wanting someone to validate their victim story
+- Anyone not willing to do deep personal work
+- People who want their spouse to change but won't change themselves
+
+## Contact & Next Steps
+
+- **Website:** https://cassandkathryn.com
+- **For Men:** https://cassandkathryn.com/men (The Marriage Reset)
+- **For Women:** https://cassandkathryn.com/women (The White Picket Fence Project)
+- **Free Training:** https://cassandkathryn.com/free-training
+- **Not Sure?** Start with the free training to understand the approach
+
+## FAQ Highlights
+
+**Q: Can I save my marriage if my spouse has given up?**
+A: Yes. Most of the 5,600+ couples started with only ONE person willing to work. When you transform at the identity level, your spouse responds.
+
+**Q: How is this different from marriage counseling?**
+A: Traditional counseling focuses on communication techniques and requires both spouses. We focus on IDENTITY transformation. You can't fix a marriage by working on the marriage—you fix it by becoming a different person.
+
+**Q: What if we haven't had sex in years?**
+A: Sexless marriages are our specialty. Your spouse isn't "just not a sexual person." They're not having sex with you because they don't feel safe, respected, or desired. Transform who you are → intimacy returns as genuine desire.
+
+**Q: How long does it take?**
+A: Most couples see significant transformation within 6-12 months. Some notice shifts within WEEKS. Depends on commitment and depth of damage.
+
+**Q: Why only 23% acceptance rate?**
+A: We're selective because transformation requires commitment. We only work with people serious about deep work—not looking for quick fixes or victim validation.
+`);
+      }
+
       // For SSR sites, proxy to the production SSR server
       const isSSR = isProdSSR();
       const hasProcess = !!prodServerProcess;
