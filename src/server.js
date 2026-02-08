@@ -10,696 +10,60 @@ import httpProxy from "http-proxy";
 import sendgrid from "@sendgrid/mail";
 import * as tar from "tar";
 
-// Restore Claude Code from persistent volume on container restart.
-// The binary lives at /data/claude-code and config at /data/.claude - both on
-// the Railway volume. The ephemeral root filesystem needs symlinks recreated
-// after every boot so that `claude` is on PATH and settings/history persist.
-{
-  const home = os.homedir();
-
-  // Claude Code binary: /root/.local/share/claude -> /data/claude-code
-  // The bin symlink at /root/.local/bin/claude points through this.
-  const localShare = path.join(home, ".local", "share");
-  const localBin = path.join(home, ".local", "bin");
-  const links = [
-    [path.join(localShare, "claude"), "/data/claude-code"],
-    [path.join(home, ".claude"), "/data/.claude"],
-    [path.join(home, ".claude.json"), "/data/.claude.json"],
-  ];
-
-  // Ensure parent directories exist (ephemeral fs starts empty).
-  for (const dir of [localShare, localBin]) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
-
-  for (const [link, target] of links) {
-    try {
-      if (fs.existsSync(target) && !fs.existsSync(link)) {
-        fs.symlinkSync(target, link);
-        console.log(`[startup] symlinked ${link} -> ${target}`);
-      }
-    } catch (err) {
-      console.warn(`[startup] could not symlink ${link}: ${err.message}`);
-    }
-  }
-
-  // Codex auth: restore from persistent volume (/data/.codex/auth.json)
-  const codexPersist = "/data/.codex/auth.json";
-  const codexRuntime = path.join(home, ".codex", "auth.json");
-  try {
-    if (fs.existsSync(codexPersist) && !fs.existsSync(codexRuntime)) {
-      fs.mkdirSync(path.join(home, ".codex"), { recursive: true });
-      fs.copyFileSync(codexPersist, codexRuntime);
-      console.log(`[startup] restored Codex auth from ${codexPersist}`);
-    }
-  } catch (err) {
-    console.warn(`[startup] could not restore Codex auth: ${err.message}`);
-  }
-
-  // Ensure the claude bin symlink points at the latest persisted version.
-  const binLink = path.join(localBin, "claude");
-  const versionsDir = "/data/claude-code/versions";
-  try {
-    if (fs.existsSync(versionsDir)) {
-      const versions = fs.readdirSync(versionsDir).sort();
-      if (versions.length > 0) {
-        const latest = path.join(versionsDir, versions[versions.length - 1]);
-        // Recreate bin symlink if missing or stale.
-        try { fs.unlinkSync(binLink); } catch {}
-        fs.symlinkSync(latest, binLink);
-        console.log(`[startup] symlinked ${binLink} -> ${latest}`);
-      }
-    }
-  } catch (err) {
-    console.warn(`[startup] could not link claude binary: ${err.message}`);
-  }
-}
-
-// ── Tailscale Setup ───────────────────────────────────────────────────────
-// Start tailscaled and authenticate if TAILSCALE_AUTHKEY is set
-async function startTailscale() {
-  const authKey = process.env.TAILSCALE_AUTHKEY?.trim();
-  if (!authKey) {
-    console.log('[tailscale] TAILSCALE_AUTHKEY not set, skipping Tailscale setup');
-    return { ok: false, reason: 'no auth key' };
-  }
-
-  console.log('[tailscale] Starting tailscaled daemon...');
-
-  // Start tailscaled in userspace networking mode (works in containers without TUN device)
-  const tailscaled = childProcess.spawn('tailscaled', [
-    '--state=/data/.tailscale/tailscaled.state',
-    '--socket=/var/run/tailscale/tailscaled.sock',
-    '--tun=userspace-networking',
-  ], {
-    stdio: ['ignore', 'pipe', 'pipe'],
-    detached: true,
-  });
-
-  tailscaled.stdout.on('data', (d) => console.log('[tailscaled]', d.toString().trim()));
-  tailscaled.stderr.on('data', (d) => console.log('[tailscaled]', d.toString().trim()));
-  tailscaled.unref();
-
-  // Wait for tailscaled to be ready
-  await new Promise(r => setTimeout(r, 2000));
-
-  // Authenticate with the auth key
-  console.log('[tailscale] Authenticating...');
-  const hostname = process.env.TAILSCALE_HOSTNAME || 'cass-ai-railway';
-
-  return new Promise((resolve) => {
-    const up = childProcess.spawn('tailscale', [
-      'up',
-      '--authkey', authKey,
-      '--hostname', hostname,
-      '--accept-routes',
-    ], {
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-
-    let output = '';
-    up.stdout.on('data', (d) => { output += d.toString(); console.log('[tailscale]', d.toString().trim()); });
-    up.stderr.on('data', (d) => { output += d.toString(); console.log('[tailscale]', d.toString().trim()); });
-
-    up.on('close', (code) => {
-      if (code === 0) {
-        console.log('[tailscale] ✓ Connected to tailnet');
-        // Get and log the IP address
-        childProcess.exec('tailscale ip -4', (err, stdout) => {
-          if (!err && stdout.trim()) {
-            console.log(`[tailscale] IP address: ${stdout.trim()}`);
-          }
-        });
-        resolve({ ok: true });
-      } else {
-        console.error('[tailscale] Failed to connect:', output);
-        resolve({ ok: false, reason: output });
-      }
-    });
-  });
-}
-
-// Railway commonly sets PORT=8080 for HTTP services.
-const PORT = Number.parseInt(process.env.PORT ?? "8080", 10);
-const STATE_DIR =
-  process.env.OPENCLAW_STATE_DIR?.trim() ||
-  path.join(os.homedir(), ".openclaw");
-const WORKSPACE_DIR =
-  process.env.OPENCLAW_WORKSPACE_DIR?.trim() ||
-  path.join(STATE_DIR, "workspace");
-
-// ── Auth Management ───────────────────────────────────────────────────────
-// Magic link authentication with SendGrid
-
-// Get Telegram bot username (for Login Widget)
-let telegramBotUsername = null;
-let telegramBotId = null;
-async function getTelegramBotInfo() {
-  if (telegramBotUsername && telegramBotId) return { username: telegramBotUsername, id: telegramBotId };
-  try {
-    const config = JSON.parse(fs.readFileSync(configPath(), 'utf8'));
-    const botToken = config?.channels?.telegram?.botToken;
-    if (!botToken) return { username: null, id: null };
-    const res = await fetch(`https://api.telegram.org/bot${botToken}/getMe`);
-    const data = await res.json();
-    if (data.ok) {
-      telegramBotUsername = data.result.username;
-      telegramBotId = String(data.result.id);
-      return { username: telegramBotUsername, id: telegramBotId };
-    }
-  } catch (e) {
-    console.error('[auth] Failed to get bot info:', e.message);
-  }
-  return { username: null, id: null };
-}
-async function getTelegramBotUsername() {
-  const info = await getTelegramBotInfo();
-  return info.username;
-}
-
-// Verify Telegram Login Widget data
-function verifyTelegramWidget(data, botToken) {
-  const { hash, ...rest } = data;
-  if (!hash) return false;
-
-  const dataCheckString = Object.keys(rest)
-    .sort()
-    .map(key => `${key}=${rest[key]}`)
-    .join('\n');
-
-  const secretKey = crypto.createHash('sha256').update(botToken).digest();
-  const hmac = crypto.createHmac('sha256', secretKey).update(dataCheckString).digest('hex');
-
-  return hmac === hash;
-}
-
-function parseCookiesFromString(cookieStr) {
-  const cookies = {};
-  if (!cookieStr) return cookies;
-  cookieStr.split(';').forEach(pair => {
-    const [key, ...val] = pair.trim().split('=');
-    if (key) cookies[key] = decodeURIComponent(val.join('='));
-  });
-  return cookies;
-}
-
-// Illumin8 site directories
-const SITE_DIR = path.join(WORKSPACE_DIR, 'site');
-const PRODUCTION_DIR = path.join(SITE_DIR, 'production');
-const DEV_DIR = path.join(SITE_DIR, 'dev');
-
-// Dev server
-const DEV_SERVER_PORT = 4321;
-const DEV_SERVER_TARGET = `http://127.0.0.1:${DEV_SERVER_PORT}`;
-let devServerProcess = null;
-
-// Production SSR server (for Astro/Next.js SSR sites)
-// Use a high port unlikely to conflict (Railway uses 8080, dev uses 4321, etc)
-const PROD_SERVER_PORT = 34567;
-const PROD_SERVER_TARGET = `http://127.0.0.1:${PROD_SERVER_PORT}`;
-let prodServerProcess = null;
-
-// Gerald Dashboard
-const DASHBOARD_PORT = 3003;
-const DASHBOARD_TARGET = `http://127.0.0.1:${DASHBOARD_PORT}`;
-const DASHBOARD_DIR = path.join(STATE_DIR || '/data', 'dashboard');
-const INTERNAL_API_KEY = process.env.INTERNAL_API_KEY || 'xQQB2ppPNQ+Ruo1xgr5pIFSix+86prk02IRS1+2208RRuCFM';
-
-// Read CLIENT_DOMAIN from env or from a persisted config file
-function getClientDomain() {
-  const envDomain = process.env.CLIENT_DOMAIN?.trim();
-  if (envDomain) return envDomain;
-  // Try reading from persisted config
-  try {
-    const cfg = JSON.parse(fs.readFileSync(path.join(STATE_DIR, 'illumin8.json'), 'utf8'));
-    return cfg.clientDomain || null;
-  } catch { return null; }
-}
-
-// Serve static files with SPA fallback
-function serveStaticSite(dir, req, res) {
-  const reqPath = decodeURIComponent(req.path);
-  const filePath = path.join(dir, reqPath === '/' ? 'index.html' : reqPath);
-  
-  // Debug: Log what we're trying to serve
-  if (reqPath === '/' || reqPath === '/index.html') {
-    const indexExists = fs.existsSync(filePath);
-    const dirContents = fs.existsSync(dir) ? fs.readdirSync(dir).slice(0, 10) : [];
-    console.log(`[static] Serving ${reqPath} from ${dir}`);
-    console.log(`[static] Index exists: ${indexExists}, Dir contents: ${dirContents.join(', ')}`);
-  }
-  
-  // Prevent directory traversal
-  if (!filePath.startsWith(dir)) {
-    return res.status(403).send('Forbidden');
-  }
-  // 1. Exact file match (e.g., /styles.css, /image.png)
-  if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
-    return res.sendFile(filePath);
-  }
-  // 2. Directory with index.html (e.g., /about → /about/index.html) - Astro MPA pattern
-  const dirIndexPath = path.join(filePath, 'index.html');
-  if (fs.existsSync(dirIndexPath) && fs.statSync(dirIndexPath).isFile()) {
-    return res.sendFile(dirIndexPath);
-  }
-  // 3. Try adding .html extension (e.g., /about → /about.html)
-  const htmlPath = filePath + '.html';
-  if (fs.existsSync(htmlPath) && fs.statSync(htmlPath).isFile()) {
-    return res.sendFile(htmlPath);
-  }
-  // 4. 404 page if one exists
-  const notFoundPath = path.join(dir, '404.html');
-  if (fs.existsSync(notFoundPath)) {
-    return res.status(404).sendFile(notFoundPath);
-  }
-  // 5. Show a "Coming Soon" placeholder if no site is built yet
-  const placeholderPath = path.join(process.cwd(), 'src', 'public', 'placeholder.html');
-  if (fs.existsSync(placeholderPath)) {
-    return res.status(200).sendFile(placeholderPath);
-  }
-  return res.status(404).send('Not found');
-}
-
-// Protect /setup with a user-provided password.
-const SETUP_PASSWORD = process.env.SETUP_PASSWORD?.trim();
-
-// Debug logging helper
-const DEBUG = process.env.OPENCLAW_TEMPLATE_DEBUG?.toLowerCase() === "true";
-function debug(...args) {
-  if (DEBUG) console.log(...args);
-}
-
-// Gateway admin token (protects Openclaw gateway + Control UI).
-// Must be stable across restarts. If not provided via env, persist it in the state dir.
-function resolveGatewayToken() {
-  console.log(`[token] ========== SERVER STARTUP TOKEN RESOLUTION ==========`);
-  const envTok = process.env.OPENCLAW_GATEWAY_TOKEN?.trim();
-  console.log(`[token] ENV OPENCLAW_GATEWAY_TOKEN exists: ${!!process.env.OPENCLAW_GATEWAY_TOKEN}`);
-  console.log(`[token] ENV value length: ${process.env.OPENCLAW_GATEWAY_TOKEN?.length || 0}`);
-  console.log(`[token] After trim length: ${envTok?.length || 0}`);
-
-  if (envTok) {
-    console.log(`[token] ✓ Using token from OPENCLAW_GATEWAY_TOKEN env variable`);
-    console.log(`[token]   First 16 chars: ${envTok.slice(0, 16)}...`);
-    console.log(`[token]   Full token: ${envTok}`);
-    return envTok;
-  }
-
-  console.log(`[token] Env variable not available, checking persisted file...`);
-  const tokenPath = path.join(STATE_DIR, "gateway.token");
-  console.log(`[token] Token file path: ${tokenPath}`);
-
-  try {
-    const existing = fs.readFileSync(tokenPath, "utf8").trim();
-    if (existing) {
-      console.log(`[token] ✓ Using token from persisted file`);
-      console.log(`[token]   First 16 chars: ${existing.slice(0, 8)}...`);
-      return existing;
-    }
-  } catch (err) {
-    console.log(`[token] Could not read persisted file: ${err.message}`);
-  }
-
-  const generated = crypto.randomBytes(32).toString("hex");
-  console.log(`[token] ⚠️  Generating new random token (${generated.slice(0, 8)}...)`);
-  try {
-    fs.mkdirSync(STATE_DIR, { recursive: true });
-    fs.writeFileSync(tokenPath, generated, { encoding: "utf8", mode: 0o600 });
-    console.log(`[token] Persisted new token to ${tokenPath}`);
-  } catch (err) {
-    console.warn(`[token] Could not persist token: ${err}`);
-  }
-  return generated;
-}
-
-const OPENCLAW_GATEWAY_TOKEN = resolveGatewayToken();
-process.env.OPENCLAW_GATEWAY_TOKEN = OPENCLAW_GATEWAY_TOKEN;
-console.log(`[token] Final resolved token: ${OPENCLAW_GATEWAY_TOKEN.slice(0, 16)}... (len: ${OPENCLAW_GATEWAY_TOKEN.length})`);
-console.log(`[token] ========== TOKEN RESOLUTION COMPLETE ==========\n`);
-
-// Where the gateway will listen internally (we proxy to it).
-const INTERNAL_GATEWAY_PORT = Number.parseInt(
-  process.env.INTERNAL_GATEWAY_PORT ?? "18789",
-  10,
-);
-const INTERNAL_GATEWAY_HOST = process.env.INTERNAL_GATEWAY_HOST ?? "127.0.0.1";
-const GATEWAY_TARGET = `http://${INTERNAL_GATEWAY_HOST}:${INTERNAL_GATEWAY_PORT}`;
-
-// Always run the built-from-source CLI entry directly to avoid PATH/global-install mismatches.
-const OPENCLAW_ENTRY =
-  process.env.OPENCLAW_ENTRY?.trim() || "/openclaw/dist/entry.js";
-const OPENCLAW_NODE = process.env.OPENCLAW_NODE?.trim() || "node";
-
-function clawArgs(args) {
-  return [OPENCLAW_ENTRY, ...args];
-}
-
-function configPath() {
-  return (
-    process.env.OPENCLAW_CONFIG_PATH?.trim() ||
-    path.join(STATE_DIR, "openclaw.json")
-  );
-}
-
-function isConfigured() {
-  try {
-    const path = configPath();
-    const exists = fs.existsSync(path);
-    if (!exists) {
-      console.log(`[isConfigured] Config file NOT found at: ${path}`);
-      // Check if STATE_DIR exists
-      if (!fs.existsSync(STATE_DIR)) {
-        console.log(`[isConfigured] STATE_DIR does not exist: ${STATE_DIR}`);
-      } else {
-        console.log(`[isConfigured] STATE_DIR exists, listing contents:`);
-        const files = fs.readdirSync(STATE_DIR);
-        console.log(`[isConfigured] Files in STATE_DIR: ${files.join(', ') || '(empty)'}`);
-      }
-    } else {
-      console.log(`[isConfigured] Config file found at: ${path}`);
-    }
-    return exists;
-  } catch (err) {
-    console.error(`[isConfigured] Error checking config: ${err.message}`);
-    return false;
-  }
-}
-
-let gatewayProc = null;
-let gatewayStarting = null;
-
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms));
-}
-
-async function waitForGatewayReady(opts = {}) {
-  const timeoutMs = opts.timeoutMs ?? 300_000; // 5 minutes default - initial setup can be slow
-  const start = Date.now();
-  const endpoints = ["/openclaw", "/openclaw", "/", "/health"];
-
-  while (Date.now() - start < timeoutMs) {
-    for (const endpoint of endpoints) {
-      try {
-        const res = await fetch(`${GATEWAY_TARGET}${endpoint}`, { method: "GET" });
-        // Any HTTP response means the port is open.
-        if (res) {
-          console.log(`[gateway] ready at ${endpoint}`);
-          return true;
-        }
-      } catch (err) {
-        // not ready, try next endpoint
-      }
-    }
-    await sleep(250);
-  }
-  console.error(`[gateway] failed to become ready after ${timeoutMs}ms`);
-  return false;
-}
-
-// Fix invalid provider entries in openclaw.json that block `config set` commands.
-// Openclaw validates the entire config before writing any field -- a single invalid
-// provider (e.g. elevenlabs with missing baseUrl/models) causes ALL config writes to fail.
-function fixInvalidConfig() {
-  try {
-    const cfgPath = configPath();
-    if (!fs.existsSync(cfgPath)) return;
-    const config = JSON.parse(fs.readFileSync(cfgPath, "utf8"));
-    const providers = config?.models?.providers;
-    if (!providers || typeof providers !== "object") return;
-
-    let modified = false;
-    for (const [name, provider] of Object.entries(providers)) {
-      if (!provider || typeof provider !== "object") continue;
-      const missingBaseUrl = !provider.baseUrl || typeof provider.baseUrl !== "string";
-      const missingModels = !Array.isArray(provider.models);
-      if (missingBaseUrl || missingModels) {
-        console.log(`[config-fix] Removing invalid provider '${name}' (baseUrl: ${!missingBaseUrl}, models: ${!missingModels})`);
-        delete providers[name];
-        modified = true;
-      }
-    }
-
-    if (modified) {
-      fs.writeFileSync(cfgPath, JSON.stringify(config, null, 2));
-      console.log(`[config-fix] ✓ Fixed invalid config entries`);
-    }
-  } catch (err) {
-    console.warn(`[config-fix] Could not fix config: ${err.message}`);
-  }
-}
-
-// Write a value to openclaw.json directly, bypassing the CLI.
-// Used as a fallback when `openclaw config set` fails due to validation errors.
-function directConfigSet(keyPath, value) {
-  const cfgPath = configPath();
-  const config = JSON.parse(fs.readFileSync(cfgPath, "utf8"));
-  const keys = keyPath.split(".");
-  let obj = config;
-  for (let i = 0; i < keys.length - 1; i++) {
-    if (!obj[keys[i]] || typeof obj[keys[i]] !== "object") obj[keys[i]] = {};
-    obj = obj[keys[i]];
-  }
-  obj[keys[keys.length - 1]] = value;
-  fs.writeFileSync(cfgPath, JSON.stringify(config, null, 2));
-}
-
-async function startGateway() {
-  if (gatewayProc) return;
-  if (!isConfigured()) throw new Error("Gateway cannot start: not configured");
-
-  fs.mkdirSync(STATE_DIR, { recursive: true });
-  fs.mkdirSync(WORKSPACE_DIR, { recursive: true });
-
-  // Fix any invalid config entries before attempting config writes
-  fixInvalidConfig();
-
-  // Sync critical config before every gateway start.
-  console.log(`[gateway] ========== GATEWAY START CONFIG SYNC ==========`);
-  console.log(`[gateway] Syncing wrapper token to config: ${OPENCLAW_GATEWAY_TOKEN.slice(0, 16)}... (len: ${OPENCLAW_GATEWAY_TOKEN.length})`);
-
-  const syncResult = await runCmd(
-    OPENCLAW_NODE,
-    clawArgs(["config", "set", "gateway.auth.token", OPENCLAW_GATEWAY_TOKEN]),
-  );
-
-  // Ensure OpenAI-compatible chat endpoint is enabled (required by Gerald Dashboard)
-  await runCmd(
-    OPENCLAW_NODE,
-    clawArgs(["config", "set", "gateway.http.endpoints.chatCompletions.enabled", "true"]),
-  );
-
-  // Sync default model from env (ensures env var changes take effect without re-onboarding)
-  const envModel = process.env.DEFAULT_MODEL?.trim();
-  if (envModel) {
-    await runCmd(OPENCLAW_NODE, clawArgs(["config", "set", "agents.defaults.model.primary", envModel]));
-    console.log(`[gateway] Model synced: ${envModel}`);
-  }
-
-  // Sync Anthropic setup-token from env (persists Claude Max/Pro subscription through rebuilds)
-  const anthropicToken = process.env.ANTHROPIC_SETUP_TOKEN?.trim();
-  if (anthropicToken) {
-    const agentDir = path.join(STATE_DIR, 'agents', 'main', 'agent');
-    const authStorePath = path.join(agentDir, 'auth-profiles.json');
-    try {
-      fs.mkdirSync(agentDir, { recursive: true });
-      let store = { version: 1, profiles: {}, order: [], lastGood: {}, usageStats: {} };
-      if (fs.existsSync(authStorePath)) {
-        try { store = JSON.parse(fs.readFileSync(authStorePath, 'utf8')); } catch {}
-      }
-      // Upsert the anthropic token profile
-      const profileId = 'anthropic:default';
-      store.profiles[profileId] = {
-        credential: { type: 'token', provider: 'anthropic', token: anthropicToken },
-      };
-      if (!store.order?.includes(profileId)) {
-        store.order = store.order || [];
-        store.order.unshift(profileId);
-      }
-      store.lastGood = store.lastGood || {};
-      store.lastGood.anthropic = profileId;
-      fs.writeFileSync(authStorePath, JSON.stringify(store, null, 2), { mode: 0o600 });
-      console.log(`[gateway] Anthropic token synced from ANTHROPIC_SETUP_TOKEN env`);
-
-      // Also set the auth profile in config
-      await runCmd(OPENCLAW_NODE, clawArgs([
-        "config", "set", "auth.profiles.anthropic:default.provider", "anthropic",
-      ]));
-      await runCmd(OPENCLAW_NODE, clawArgs([
-        "config", "set", "auth.profiles.anthropic:default.mode", "token",
-      ]));
-    } catch (err) {
-      console.error(`[gateway] Failed to sync Anthropic token: ${err.message}`);
-    }
-  }
-
-  console.log(`[gateway] Sync result: exit code ${syncResult.code}`);
-  if (syncResult.output?.trim()) {
-    console.log(`[gateway] Sync output: ${syncResult.output}`);
-  }
-
-  if (syncResult.code !== 0) {
-    console.error(`[gateway] ⚠️  WARNING: Token sync failed with code ${syncResult.code}`);
-    // Re-run config fix — shared secrets may have re-introduced invalid providers
-    fixInvalidConfig();
-    console.log(`[gateway] Falling back to direct JSON write for token...`);
-    try {
-      directConfigSet("gateway.auth.token", OPENCLAW_GATEWAY_TOKEN);
-      console.log(`[gateway] ✓ Token written directly to config JSON`);
-    } catch (err) {
-      console.error(`[gateway] ✗ Direct write also failed: ${err.message}`);
-    }
-  }
-
-  // Verify sync succeeded
-  try {
-    const config = JSON.parse(fs.readFileSync(configPath(), "utf8"));
-    const configToken = config?.gateway?.auth?.token;
-
-    console.log(`[gateway] Token verification:`);
-    console.log(`[gateway]   Wrapper: ${OPENCLAW_GATEWAY_TOKEN.slice(0, 16)}... (len: ${OPENCLAW_GATEWAY_TOKEN.length})`);
-    console.log(`[gateway]   Config:  ${configToken?.slice(0, 16)}... (len: ${configToken?.length || 0})`);
-
-    if (configToken !== OPENCLAW_GATEWAY_TOKEN) {
-      console.error(`[gateway] ✗ Token mismatch detected!`);
-      console.error(`[gateway]   Full wrapper: ${OPENCLAW_GATEWAY_TOKEN}`);
-      console.error(`[gateway]   Full config:  ${configToken || 'null'}`);
-      throw new Error(
-        `Token mismatch: wrapper has ${OPENCLAW_GATEWAY_TOKEN.slice(0, 16)}... but config has ${(configToken || 'null')?.slice?.(0, 16)}...`
-      );
-    }
-    console.log(`[gateway] ✓ Token verification PASSED`);
-  } catch (err) {
-    console.error(`[gateway] ERROR: Token verification failed: ${err}`);
-    throw err; // Don't start gateway with mismatched token
-  }
-
-  console.log(`[gateway] ========== TOKEN SYNC COMPLETE ==========`);
-
-  // Final config sanitization right before spawn — guards against race conditions
-  // where load-secrets.sh or other background tasks re-introduced invalid providers
-  fixInvalidConfig();
-
-  const args = [
-    "gateway",
-    "run",
-    "--bind",
-    "loopback",
-    "--port",
-    String(INTERNAL_GATEWAY_PORT),
-    "--auth",
-    "token",
-    "--token",
-    OPENCLAW_GATEWAY_TOKEN,
-  ];
-
-  gatewayProc = childProcess.spawn(OPENCLAW_NODE, clawArgs(args), {
-    stdio: "inherit",
-    env: {
-      ...process.env,
-      OPENCLAW_STATE_DIR: STATE_DIR,
-      OPENCLAW_WORKSPACE_DIR: WORKSPACE_DIR,
-    },
-  });
-
-  console.log(`[gateway] starting with command: ${OPENCLAW_NODE} ${clawArgs(args).join(" ")}`);
-  console.log(`[gateway] STATE_DIR: ${STATE_DIR}`);
-  console.log(`[gateway] WORKSPACE_DIR: ${WORKSPACE_DIR}`);
-  console.log(`[gateway] config path: ${configPath()}`);
-
-  gatewayProc.on("error", (err) => {
-    console.error(`[gateway] spawn error: ${String(err)}`);
-    gatewayProc = null;
-  });
-
-  gatewayProc.on("exit", (code, signal) => {
-    console.error(`[gateway] exited code=${code} signal=${signal}`);
-    gatewayProc = null;
-  });
-}
-
-async function ensureGatewayRunning() {
-  if (!isConfigured()) return { ok: false, reason: "not configured" };
-  if (gatewayProc) return { ok: true };
-  if (!gatewayStarting) {
-    gatewayStarting = (async () => {
-      await startGateway();
-      // Give gateway up to 5 minutes to start (initial setup can be slow)
-      const ready = await waitForGatewayReady({ timeoutMs: 300_000 });
-      if (!ready) {
-        throw new Error("Gateway did not become ready in time (5 min timeout)");
-      }
-    })().finally(() => {
-      gatewayStarting = null;
-    });
-  }
-  await gatewayStarting;
-  return { ok: true };
-}
-
-async function restartGateway() {
-  console.log("[gateway] Restarting gateway...");
-
-  // Kill gateway process tracked by wrapper
-  if (gatewayProc) {
-    console.log("[gateway] Killing wrapper-managed gateway process");
-    try {
-      gatewayProc.kill("SIGTERM");
-    } catch {
-      // ignore
-    }
-    gatewayProc = null;
-  }
-
-  // Also kill any other gateway processes (e.g., started by onboard command)
-  // by finding processes listening on the gateway port
-  console.log(`[gateway] Killing any other gateway processes on port ${INTERNAL_GATEWAY_PORT}`);
-  try {
-    const killResult = await runCmd("pkill", ["-f", "openclaw-gateway"]);
-    console.log(`[gateway] pkill result: exit code ${killResult.code}`);
-  } catch (err) {
-    console.log(`[gateway] pkill failed: ${err.message}`);
-  }
-
-  // Give processes time to exit and release the port
-  await sleep(1500);
-
-  return ensureGatewayRunning();
-}
-
-function requireSetupAuth(req, res, next) {
-  // Skip auth for Gerald subdomain - Dashboard handles its own authentication
-  const clientDomain = getClientDomain();
-  const host = req.hostname?.toLowerCase();
-  if (clientDomain && host === `gerald.${clientDomain}`) {
-    return next();
-  }
-
-  if (!SETUP_PASSWORD) {
-    return res
-      .status(500)
-      .type("text/plain")
-      .send(
-        "SETUP_PASSWORD is not set. Set it in Railway Variables before using /setup.",
-      );
-  }
-
-  const header = req.headers.authorization || "";
-  const [scheme, encoded] = header.split(" ");
-  if (scheme !== "Basic" || !encoded) {
-    res.set("WWW-Authenticate", 'Basic realm="Openclaw Setup"');
-    return res.status(401).send("Auth required");
-  }
-  const decoded = Buffer.from(encoded, "base64").toString("utf8");
-  const idx = decoded.indexOf(":");
-  const password = idx >= 0 ? decoded.slice(idx + 1) : "";
-  if (password !== SETUP_PASSWORD) {
-    res.set("WWW-Authenticate", 'Basic realm="Openclaw Setup"');
-    return res.status(401).send("Invalid password");
-  }
-  return next();
-}
-
-// requireAuth middleware removed - Dashboard handles its own authentication
+// ── Module imports ────────────────────────────────────────────────────────
+import {
+  PORT,
+  STATE_DIR,
+  WORKSPACE_DIR,
+  INTERNAL_GATEWAY_PORT,
+  GATEWAY_TARGET,
+  OPENCLAW_ENTRY,
+  OPENCLAW_NODE,
+  SITE_DIR,
+  PRODUCTION_DIR,
+  DEV_DIR,
+  DEV_SERVER_PORT,
+  DEV_SERVER_TARGET,
+  PROD_SERVER_PORT,
+  PROD_SERVER_TARGET,
+  DASHBOARD_PORT,
+  DASHBOARD_TARGET,
+  DASHBOARD_DIR,
+  INTERNAL_API_KEY,
+} from "./lib/constants.js";
+import { runCmd, sleep, safeRemoveDir, debug, clawArgs } from "./lib/helpers.js";
+import {
+  configPath,
+  isConfigured,
+  fixInvalidConfig,
+  directConfigSet,
+  OPENCLAW_GATEWAY_TOKEN,
+  getClientDomain,
+} from "./lib/config.js";
+import { restorePersistedTools, startTailscale } from "./lib/startup.js";
+import { requireSetupAuth } from "./lib/auth.js";
+import { getGitHubToken, GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET } from "./lib/github.js";
+import { setupCloudflareDNS, createTurnstileWidget } from "./lib/cloudflare.js";
+import { setupSendGridDomainAuth } from "./lib/sendgrid.js";
+import { cloneAndBuild, autoSaveDevChanges, pullDevBranch, serveStaticSite } from "./lib/site-builder.js";
+import { startDevServer, stopDevServer, restartDevServer, getDevServerProcess } from "./lib/dev-server.js";
+import { isProdSSR, startProdServer, stopProdServer, restartProdServer, getProdServerProcess } from "./lib/prod-server.js";
+import { setupDashboard, setupWorkspace, startDashboard, stopDashboard, getDashboardProcess } from "./lib/dashboard.js";
+import {
+  startGateway,
+  waitForGatewayReady,
+  ensureGatewayRunning,
+  restartGateway,
+  buildOnboardArgs,
+  getGatewayProc,
+  isGatewayStarting,
+} from "./lib/gateway.js";
+
+// ── Startup: restore persistent tools ─────────────────────────────────
+restorePersistedTools();
+
+// ── Token already resolved in config.js ──────────────────────────────
+// OPENCLAW_GATEWAY_TOKEN is imported from config.js (single source of truth)
 
 const app = express();
 app.set('trust proxy', 1);
@@ -765,8 +129,8 @@ app.get("/setup/healthz", (_req, res) => {
     uptime: process.uptime(),
     configured: isConfigured(),
     processes: {
-      gateway: !!gatewayProc,
-      dashboard: !!dashboardProcess,
+      gateway: !!getGatewayProc(),
+      dashboard: !!getDashboardProcess(),
     }
   };
   res.json(health);
@@ -832,10 +196,10 @@ app.get("/setup/diagnostic", (_req, res) => {
         : null,
     },
     processes: {
-      gateway: !!gatewayProc,
-      gatewayStarting: !!gatewayStarting,
-      dashboard: !!dashboardProcess,
-      devServer: !!devServerProcess,
+      gateway: !!getGatewayProc(),
+      gatewayStarting: isGatewayStarting(),
+      dashboard: !!getDashboardProcess(),
+      devServer: !!getDevServerProcess(),
     },
     openclaw: {
       executable: OPENCLAW_NODE,
@@ -866,14 +230,14 @@ app.get("/status", (_req, res) => {
     stateDirExists: fs.existsSync(STATE_DIR),
     stateFiles: stateFiles,
     dashboard: {
-      running: !!dashboardProcess,
+      running: !!getDashboardProcess(),
       installed: fs.existsSync(path.join(DASHBOARD_DIR, 'package.json')),
     },
     gateway: {
-      running: !!gatewayProc,
+      running: !!getGatewayProc(),
     },
     devServer: {
-      running: !!devServerProcess,
+      running: !!getDevServerProcess(),
       installed: fs.existsSync(path.join(DEV_DIR, 'package.json')),
     },
     site: {
@@ -1064,1249 +428,6 @@ app.get("/setup/api/status", requireSetupAuth, async (_req, res) => {
     defaultAllowedEmails: process.env.DEFAULT_ALLOWED_EMAILS?.trim() || null,
   });
 });
-
-function buildOnboardArgs(payload) {
-  const args = [
-    "onboard",
-    "--non-interactive",
-    "--accept-risk",
-    "--json",
-    "--no-install-daemon",
-    "--skip-health",
-    "--workspace",
-    WORKSPACE_DIR,
-    // The wrapper owns public networking; keep the gateway internal.
-    "--gateway-bind",
-    "loopback",
-    "--gateway-port",
-    String(INTERNAL_GATEWAY_PORT),
-    "--gateway-auth",
-    "token",
-    "--gateway-token",
-    OPENCLAW_GATEWAY_TOKEN,
-    "--flow",
-    payload.flow || "quickstart",
-  ];
-
-  if (payload.authChoice) {
-    args.push("--auth-choice", payload.authChoice);
-
-    // Map secret to correct flag for common choices.
-    // Fall back to env var API key if user didn't enter one manually
-    let secret = (payload.authSecret || "").trim();
-    if (!secret && payload.authChoice === "moonshot-api-key" && process.env.MOONSHOT_API_KEY?.trim()) {
-      secret = process.env.MOONSHOT_API_KEY.trim();
-    }
-    const map = {
-      "openai-api-key": "--openai-api-key",
-      apiKey: "--anthropic-api-key",
-      "openrouter-api-key": "--openrouter-api-key",
-      "ai-gateway-api-key": "--ai-gateway-api-key",
-      "moonshot-api-key": "--moonshot-api-key",
-      "kimi-code-api-key": "--kimi-code-api-key",
-      "gemini-api-key": "--gemini-api-key",
-      "zai-api-key": "--zai-api-key",
-      "minimax-api": "--minimax-api-key",
-      "minimax-api-lightning": "--minimax-api-key",
-      "synthetic-api-key": "--synthetic-api-key",
-      "opencode-zen": "--opencode-zen-api-key",
-    };
-    const flag = map[payload.authChoice];
-    if (flag && secret) {
-      args.push(flag, secret);
-    }
-
-    if (payload.authChoice === "token" && secret) {
-      // This is the Anthropics setup-token flow.
-      args.push("--token-provider", "anthropic", "--token", secret);
-    }
-  }
-
-  return args;
-}
-
-function runCmd(cmd, args, opts = {}) {
-  return new Promise((resolve) => {
-    const proc = childProcess.spawn(cmd, args, {
-      ...opts,
-      env: {
-        ...process.env,
-        ...(opts.env || {}),
-        OPENCLAW_STATE_DIR: STATE_DIR,
-        OPENCLAW_WORKSPACE_DIR: WORKSPACE_DIR,
-      },
-    });
-
-    let out = "";
-    proc.stdout?.on("data", (d) => (out += d.toString("utf8")));
-    proc.stderr?.on("data", (d) => (out += d.toString("utf8")));
-
-    proc.on("error", (err) => {
-      out += `\n[spawn error] ${String(err)}\n`;
-      resolve({ code: 127, output: out });
-    });
-
-    proc.on("close", (code) => resolve({ code: code ?? 0, output: out }));
-  });
-}
-
-async function setupCloudflareDNS(domain, railwayDomain) {
-  const cfKey = process.env.CLOUDFLARE_API_KEY?.trim();
-  const cfEmail = process.env.CLOUDFLARE_EMAIL?.trim();
-  if (!cfKey || !cfEmail) {
-    return { ok: false, output: 'Cloudflare API key or email not set in environment variables' };
-  }
-
-  const cfHeaders = {
-    'X-Auth-Email': cfEmail,
-    'X-Auth-Key': cfKey,
-    'Content-Type': 'application/json',
-  };
-
-  let output = '';
-
-  // Normalize domain: strip www. prefix if present (for subdomain creation)
-  // The apex domain (solarwyse.ca) should be used for subdomains (dev.solarwyse.ca, gerald.solarwyse.ca)
-  const apexDomain = domain.replace(/^www\./, '');
-  if (domain !== apexDomain) {
-    output += `Normalized domain: ${domain} → ${apexDomain} (for subdomain creation)\n`;
-  }
-
-  // 1. Look up zone ID (use apex domain for zone lookup)
-  const zoneRes = await fetch(`https://api.cloudflare.com/client/v4/zones?name=${apexDomain}`, { headers: cfHeaders });
-  const zoneData = await zoneRes.json();
-
-  if (!zoneData.success || !zoneData.result?.length) {
-    return { ok: false, output: `Domain ${apexDomain} not found in Cloudflare account. Add it to Cloudflare first.` };
-  }
-
-  const zoneId = zoneData.result[0].id;
-  output += `Zone found: ${zoneId}\n`;
-
-  // 2. Get existing DNS records
-  const existingRes = await fetch(`https://api.cloudflare.com/client/v4/zones/${zoneId}/dns_records`, { headers: cfHeaders });
-  const existingData = await existingRes.json();
-  const existingRecords = existingData.result || [];
-
-  // 3. Create/update CNAME records for apex, www, dev, and gerald subdomains
-  const records = [
-    { name: apexDomain, type: 'CNAME' },
-    { name: `www.${apexDomain}`, type: 'CNAME' },
-    { name: `dev.${apexDomain}`, type: 'CNAME' },
-    { name: `gerald.${apexDomain}`, type: 'CNAME' },
-  ];
-
-  for (const record of records) {
-    const content = record.content || railwayDomain;
-    const existing = existingRecords.find(r => r.name === record.name && r.type === record.type);
-
-    if (existing) {
-      // Update existing record
-      const updateRes = await fetch(`https://api.cloudflare.com/client/v4/zones/${zoneId}/dns_records/${existing.id}`, {
-        method: 'PUT',
-        headers: cfHeaders,
-        body: JSON.stringify({
-          type: record.type,
-          name: record.name,
-          content: content,
-          proxied: true,
-        }),
-      });
-      const updateData = await updateRes.json();
-      output += `Updated ${record.name} → ${content} (${updateData.success ? 'OK' : JSON.stringify(updateData.errors)})\n`;
-    } else {
-      // Create new record
-      const createRes = await fetch(`https://api.cloudflare.com/client/v4/zones/${zoneId}/dns_records`, {
-        method: 'POST',
-        headers: cfHeaders,
-        body: JSON.stringify({
-          type: record.type,
-          name: record.name,
-          content: content,
-          proxied: true,
-        }),
-      });
-      const createData = await createRes.json();
-      output += `Created ${record.name} → ${content} (${createData.success ? 'OK' : JSON.stringify(createData.errors)})\n`;
-    }
-  }
-
-  return { ok: true, output, zoneId };
-}
-
-async function createTurnstileWidget(domain, zoneId) {
-  const cfKey = process.env.CLOUDFLARE_API_KEY?.trim();
-  const cfEmail = process.env.CLOUDFLARE_EMAIL?.trim();
-  if (!cfKey || !cfEmail) {
-    return { ok: false, output: 'Cloudflare credentials not available' };
-  }
-
-  const cfHeaders = {
-    'X-Auth-Email': cfEmail,
-    'X-Auth-Key': cfKey,
-    'Content-Type': 'application/json',
-  };
-
-  // Get account ID from the zone
-  const zoneRes = await fetch(`https://api.cloudflare.com/client/v4/zones/${zoneId}`, { headers: cfHeaders });
-  const zoneData = await zoneRes.json();
-  const accountId = zoneData.result?.account?.id;
-
-  if (!accountId) {
-    return { ok: false, output: 'Could not determine Cloudflare account ID' };
-  }
-
-  // Create Turnstile widget
-  const turnstileRes = await fetch(`https://api.cloudflare.com/client/v4/accounts/${accountId}/challenges/widgets`, {
-    method: 'POST',
-    headers: cfHeaders,
-    body: JSON.stringify({
-      name: `${domain} Contact Form`,
-      domains: [domain, `dev.${domain}`, `gerald.${domain}`],
-      mode: 'managed',
-      bot_fight_mode: false,
-    }),
-  });
-
-  const turnstileData = await turnstileRes.json();
-
-  if (!turnstileData.success) {
-    return { ok: false, output: `Turnstile creation failed: ${JSON.stringify(turnstileData.errors)}` };
-  }
-
-  const siteKey = turnstileData.result.sitekey;
-  const secretKey = turnstileData.result.secret;
-
-  return {
-    ok: true,
-    siteKey,
-    secretKey,
-    output: `Turnstile widget created: ${siteKey}`,
-  };
-}
-
-async function setupSendGridDomainAuth(domain, sendgridApiKey) {
-  const cfKey = process.env.CLOUDFLARE_API_KEY?.trim();
-  const cfEmail = process.env.CLOUDFLARE_EMAIL?.trim();
-
-  if (!cfKey || !cfEmail) {
-    return { ok: false, output: '[sendgrid-domain] Cloudflare credentials not available' };
-  }
-
-  const sgHeaders = {
-    'Authorization': `Bearer ${sendgridApiKey}`,
-    'Content-Type': 'application/json',
-  };
-
-  const cfHeaders = {
-    'X-Auth-Email': cfEmail,
-    'X-Auth-Key': cfKey,
-    'Content-Type': 'application/json',
-  };
-
-  let output = '';
-
-  try {
-    // 1. Check if domain auth already exists
-    output += `[sendgrid-domain] Checking for existing domain authentication...\n`;
-    const existingDomainsRes = await fetch('https://api.sendgrid.com/v3/whitelabel/domains', {
-      headers: sgHeaders,
-    });
-    if (!existingDomainsRes.ok) {
-      const errText = await existingDomainsRes.text();
-      return { ok: false, output: `SendGrid API error (${existingDomainsRes.status}): ${errText}` };
-    }
-    const existingDomains = await existingDomainsRes.json();
-    if (!Array.isArray(existingDomains)) {
-      return { ok: false, output: `SendGrid API returned unexpected response: ${JSON.stringify(existingDomains)}` };
-    }
-
-    let domainId = null;
-    let dnsRecords = null;
-
-    const existing = existingDomains.find(d => d.domain === domain);
-    if (existing) {
-      output += `[sendgrid-domain] Found existing domain auth (ID: ${existing.id})\n`;
-      domainId = existing.id;
-      dnsRecords = existing.dns;
-    } else {
-      // 2. Create domain authentication
-      output += `[sendgrid-domain] Creating domain authentication for ${domain}...\n`;
-      const createRes = await fetch('https://api.sendgrid.com/v3/whitelabel/domains', {
-        method: 'POST',
-        headers: sgHeaders,
-        body: JSON.stringify({
-          domain: domain,
-          automatic_security: true,
-          default: true,
-        }),
-      });
-
-      if (!createRes.ok) {
-        const errorText = await createRes.text();
-        return { ok: false, output: output + `[sendgrid-domain] Failed to create domain: ${errorText}` };
-      }
-
-      const createData = await createRes.json();
-      domainId = createData.id;
-      dnsRecords = createData.dns;
-      output += `[sendgrid-domain] Domain auth created (ID: ${domainId})\n`;
-    }
-
-    // 3. Get Cloudflare zone ID
-    output += `[sendgrid-domain] Looking up Cloudflare zone for ${domain}...\n`;
-    const zoneRes = await fetch(`https://api.cloudflare.com/client/v4/zones?name=${domain}`, {
-      headers: cfHeaders,
-    });
-    if (!zoneRes.ok) {
-      const errText = await zoneRes.text();
-      return { ok: false, output: output + `[sendgrid-domain] Cloudflare API error (${zoneRes.status}): ${errText}\n` };
-    }
-    const zoneData = await zoneRes.json();
-
-    if (!zoneData.success || !zoneData.result?.length) {
-      return { ok: false, output: output + `[sendgrid-domain] Domain ${domain} not found in Cloudflare account\n` };
-    }
-
-    const zoneId = zoneData.result[0].id;
-    output += `[sendgrid-domain] Cloudflare zone found: ${zoneId}\n`;
-
-    // 4. Get existing DNS records
-    const existingDnsRes = await fetch(`https://api.cloudflare.com/client/v4/zones/${zoneId}/dns_records`, {
-      headers: cfHeaders,
-    });
-    if (!existingDnsRes.ok) {
-      const errText = await existingDnsRes.text();
-      return { ok: false, output: output + `[sendgrid-domain] Failed to fetch DNS records (${existingDnsRes.status}): ${errText}\n` };
-    }
-    const existingDnsData = await existingDnsRes.json();
-    const existingRecords = existingDnsData.result || [];
-
-    // 5. Create/update DNS records
-    const recordsToCreate = [
-      { key: 'mail_cname', record: dnsRecords.mail_cname },
-      { key: 'dkim1', record: dnsRecords.dkim1 },
-      { key: 'dkim2', record: dnsRecords.dkim2 },
-    ];
-
-    for (const { key, record } of recordsToCreate) {
-      if (!record) {
-        output += `[sendgrid-domain] Warning: ${key} record not provided by SendGrid\n`;
-        continue;
-      }
-
-      const existing = existingRecords.find(r =>
-        r.name === record.host && r.type.toUpperCase() === record.type.toUpperCase()
-      );
-
-      if (existing) {
-        // Update existing record
-        const updateRes = await fetch(`https://api.cloudflare.com/client/v4/zones/${zoneId}/dns_records/${existing.id}`, {
-          method: 'PUT',
-          headers: cfHeaders,
-          body: JSON.stringify({
-            type: record.type.toUpperCase(),
-            name: record.host,
-            content: record.data,
-            proxied: false, // CNAME records for email must not be proxied
-          }),
-        });
-        const updateData = await updateRes.json();
-        output += `[sendgrid-domain] Updated ${key}: ${record.host} → ${record.data} (${updateData.success ? 'OK' : 'FAILED'})\n`;
-      } else {
-        // Create new record
-        const createRes = await fetch(`https://api.cloudflare.com/client/v4/zones/${zoneId}/dns_records`, {
-          method: 'POST',
-          headers: cfHeaders,
-          body: JSON.stringify({
-            type: record.type.toUpperCase(),
-            name: record.host,
-            content: record.data,
-            proxied: false, // CNAME records for email must not be proxied
-          }),
-        });
-        const createData = await createRes.json();
-        output += `[sendgrid-domain] Created ${key}: ${record.host} → ${record.data} (${createData.success ? 'OK' : 'FAILED'})\n`;
-      }
-    }
-
-    // 6. Wait for DNS propagation and validate (retry loop)
-    output += `[sendgrid-domain] Waiting for DNS propagation...\n`;
-    let validated = false;
-
-    for (let attempt = 1; attempt <= 3; attempt++) {
-      await sleep(5000); // Wait 5 seconds between attempts
-
-      output += `[sendgrid-domain] Validation attempt ${attempt}/3...\n`;
-      const validateRes = await fetch(`https://api.sendgrid.com/v3/whitelabel/domains/${domainId}/validate`, {
-        method: 'POST',
-        headers: sgHeaders,
-      });
-
-      if (!validateRes.ok) {
-        const errorText = await validateRes.text();
-        output += `[sendgrid-domain] Validation API error (${validateRes.status}): ${errorText}\n`;
-        continue;
-      }
-
-      const validateData = await validateRes.json();
-
-      if (validateData.valid) {
-        validated = true;
-        output += `[sendgrid-domain] ✓ Domain validation successful!\n`;
-        break;
-      } else {
-        output += `[sendgrid-domain] Validation pending (DNS may need more time to propagate)\n`;
-        if (validateData.validation_results) {
-          output += `[sendgrid-domain] Details: ${JSON.stringify(validateData.validation_results)}\n`;
-        }
-      }
-    }
-
-    if (!validated) {
-      output += `[sendgrid-domain] ⚠️  Domain not yet validated - DNS records created but may need more time to propagate\n`;
-    }
-
-    // 7. Register verified sender as backup
-    output += `[sendgrid-domain] Registering verified sender...\n`;
-    const senderEmail = `noreply@${domain}`;
-
-    const verifiedSenderRes = await fetch('https://api.sendgrid.com/v3/verified_senders', {
-      method: 'POST',
-      headers: sgHeaders,
-      body: JSON.stringify({
-        nickname: 'Gerald Dashboard',
-        from_email: senderEmail,
-        from_name: 'Gerald Dashboard',
-        reply_to: senderEmail,
-        reply_to_name: 'Gerald Dashboard',
-        address: '123 Main St',
-        city: 'Edmonton',
-        state: 'AB',
-        zip: 'T5A0A1',
-        country: 'CA',
-      }),
-    });
-
-    if (verifiedSenderRes.ok) {
-      output += `[sendgrid-domain] ✓ Verified sender registered: ${senderEmail}\n`;
-    } else {
-      const errorText = await verifiedSenderRes.text();
-      // Don't fail if sender already exists
-      if (errorText.includes('already exists') || errorText.includes('duplicate')) {
-        output += `[sendgrid-domain] Verified sender already exists: ${senderEmail}\n`;
-      } else {
-        output += `[sendgrid-domain] ⚠️  Failed to register verified sender (${verifiedSenderRes.status}): ${errorText}\n`;
-      }
-    }
-
-    return {
-      ok: true,
-      validated,
-      output,
-    };
-
-  } catch (err) {
-    return {
-      ok: false,
-      output: output + `[sendgrid-domain] Error: ${err.message}\n`,
-    };
-  }
-}
-
-// Helper to safely remove directories (handles node_modules symlinks better than fs.rmSync)
-async function safeRemoveDir(dir) {
-  if (fs.existsSync(dir)) {
-    await runCmd('rm', ['-rf', dir]);
-  }
-}
-
-// Auto-save uncommitted dev site changes before destructive operations
-async function autoSaveDevChanges() {
-  try {
-    // Check if DEV_DIR exists and has a .git directory
-    const gitDir = path.join(DEV_DIR, '.git');
-    if (!fs.existsSync(DEV_DIR) || !fs.existsSync(gitDir)) {
-      console.log('[auto-save] DEV_DIR not a git repo, skipping auto-save');
-      return { ok: true, saved: false };
-    }
-
-    // Check for uncommitted changes
-    const status = await runCmd('git', ['status', '--porcelain'], { cwd: DEV_DIR });
-    if (status.code !== 0) {
-      console.error(`[auto-save] git status failed: ${status.output}`);
-      return { ok: false, error: status.output };
-    }
-
-    const hasChanges = status.output.trim().length > 0;
-    if (!hasChanges) {
-      console.log('[auto-save] No uncommitted changes, skipping auto-save');
-      return { ok: true, saved: false };
-    }
-
-    console.log('[auto-save] Uncommitted changes detected, saving...');
-
-    // Set git user config before committing
-    await runCmd('git', ['config', 'user.email', 'gerald@illumin8.ca'], { cwd: DEV_DIR });
-    await runCmd('git', ['config', 'user.name', 'Gerald'], { cwd: DEV_DIR });
-
-    // Stage all changes
-    const add = await runCmd('git', ['add', '-A'], { cwd: DEV_DIR });
-    if (add.code !== 0) {
-      console.error(`[auto-save] git add failed: ${add.output}`);
-      return { ok: false, error: add.output };
-    }
-
-    // Commit with timestamp
-    const timestamp = new Date().toISOString().replace('T', ' ').substring(0, 19);
-    const commitMsg = `auto-save: dev site changes (${timestamp})`;
-    const commit = await runCmd('git', ['commit', '-m', commitMsg], { cwd: DEV_DIR });
-    if (commit.code !== 0) {
-      console.error(`[auto-save] git commit failed: ${commit.output}`);
-      return { ok: false, error: commit.output };
-    }
-
-    // Get devBranch from illumin8.json or github.json
-    let devBranch = 'development';
-    try {
-      const illumin8ConfigPath = path.join(STATE_DIR, 'illumin8.json');
-      if (fs.existsSync(illumin8ConfigPath)) {
-        const config = JSON.parse(fs.readFileSync(illumin8ConfigPath, 'utf8'));
-        devBranch = config.devBranch || 'development';
-      } else {
-        const githubConfigPath = path.join(STATE_DIR, 'github.json');
-        if (fs.existsSync(githubConfigPath)) {
-          const config = JSON.parse(fs.readFileSync(githubConfigPath, 'utf8'));
-          devBranch = config.devBranch || 'development';
-        }
-      }
-    } catch (e) {
-      console.warn(`[auto-save] Could not read config, using default branch: ${e.message}`);
-    }
-
-    // Get GitHub token and update remote URL with token authentication
-    const token = getGitHubToken();
-    if (token) {
-      // Get current remote URL
-      const remoteResult = await runCmd('git', ['remote', 'get-url', 'origin'], { cwd: DEV_DIR });
-      if (remoteResult.code === 0) {
-        const originalUrl = remoteResult.output.trim();
-        // Remove any existing token from URL and add new one
-        const cleanUrl = originalUrl.replace(/https:\/\/.*?@/, 'https://');
-        const authUrl = cleanUrl.replace('https://', `https://x-access-token:${token}@`);
-        await runCmd('git', ['remote', 'set-url', 'origin', authUrl], { cwd: DEV_DIR });
-      }
-    }
-
-    // Push to dev branch
-    console.log(`[auto-save] Pushing to ${devBranch}...`);
-    const push = await runCmd('git', ['push', 'origin', devBranch], { cwd: DEV_DIR });
-    
-    // Restore URL without token for security
-    if (token) {
-      const remoteResult = await runCmd('git', ['remote', 'get-url', 'origin'], { cwd: DEV_DIR });
-      if (remoteResult.code === 0) {
-        const authUrl = remoteResult.output.trim();
-        const cleanUrl = authUrl.replace(/https:\/\/.*?@/, 'https://');
-        await runCmd('git', ['remote', 'set-url', 'origin', cleanUrl], { cwd: DEV_DIR });
-      }
-    }
-
-    if (push.code !== 0) {
-      console.error(`[auto-save] git push failed: ${push.output}`);
-      // Don't return error - we saved locally at least
-      return { ok: true, saved: true, pushed: false, error: push.output };
-    }
-
-    console.log(`[auto-save] ✓ Saved and pushed changes to ${devBranch}`);
-    return { ok: true, saved: true, pushed: true };
-  } catch (err) {
-    console.error(`[auto-save] Unexpected error: ${err.message}`);
-    return { ok: false, error: err.message };
-  }
-}
-
-async function cloneAndBuild(repoUrl, branch, targetDir, token, opts = {}) {
-  const { keepSource = false } = opts; // For dev server, keep source code
-  // Clean target dir (use shell rm -rf to handle node_modules properly)
-  await safeRemoveDir(targetDir);
-  fs.mkdirSync(targetDir, { recursive: true });
-
-  // Clone with token auth
-  const authUrl = token
-    ? repoUrl.replace('https://', `https://x-access-token:${token}@`)
-    : repoUrl;
-
-  console.log(`[build] Cloning ${repoUrl} branch=${branch} into ${targetDir}`);
-  let clone = await runCmd('git', ['clone', '--depth', '1', '--branch', branch, authUrl, targetDir]);
-  if (clone.code !== 0) {
-    // If branch doesn't exist, create it from the default branch
-    if (clone.output.includes('not found') || clone.output.includes('Could not find remote branch')) {
-      console.log(`[build] Branch '${branch}' not found, creating from default branch...`);
-      await safeRemoveDir(targetDir);
-      fs.mkdirSync(targetDir, { recursive: true });
-
-      // Clone default branch
-      clone = await runCmd('git', ['clone', '--depth', '1', authUrl, targetDir]);
-      if (clone.code === 0) {
-        // Create and push the new branch
-        await runCmd('git', ['checkout', '-b', branch], { cwd: targetDir });
-        await runCmd('git', ['push', 'origin', branch], { cwd: targetDir });
-        console.log(`[build] Created branch '${branch}' from default`);
-      } else {
-        console.error(`[build] Clone failed: ${clone.output}`);
-        return { ok: false, output: clone.output };
-      }
-    } else {
-      console.error(`[build] Clone failed: ${clone.output}`);
-      return { ok: false, output: clone.output };
-    }
-  }
-
-  // Detect build system and install deps
-  const packageJson = path.join(targetDir, 'package.json');
-  if (fs.existsSync(packageJson)) {
-    // Use clean PATH to avoid esbuild version conflicts with openclaw's bundled version
-    const cleanEnv = {
-      ...process.env,
-      PATH: '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/home/linuxbrew/.linuxbrew/bin',
-      // Prevent esbuild from finding stale binaries during postinstall
-      ESBUILD_BINARY_PATH: '',
-    };
-
-    if (keepSource) {
-      // ── DEV MODE: Keep full source code for live dev server ──
-      // Just install dependencies — no build needed.
-      // The dev server (e.g. `npm run dev` / Astro) handles compilation on-the-fly.
-      console.log(`[build] Dev mode: installing dependencies (full install)...`);
-      const install = await runCmd('npm', ['install'], { cwd: targetDir, env: cleanEnv });
-      if (install.code !== 0) {
-        console.error(`[build] npm install failed: ${install.output}`);
-        return { ok: false, output: install.output };
-      }
-
-      // Strip token from git remote URL for security (dev dir persists)
-      if (token) {
-        const remoteResult = await runCmd('git', ['remote', 'get-url', 'origin'], { cwd: targetDir });
-        if (remoteResult.code === 0) {
-          const cleanUrl = remoteResult.output.trim().replace(/https:\/\/.*?@/, 'https://');
-          await runCmd('git', ['remote', 'set-url', 'origin', cleanUrl], { cwd: targetDir });
-        }
-      }
-
-      console.log(`[build] Dev source ready: ${targetDir} (branch: ${branch})`);
-      return { ok: true, output: `Cloned source from ${branch} branch (dev mode — ready for npm run dev)` };
-    }
-
-    // ── PRODUCTION MODE: Install, build, and extract output ──
-    console.log(`[build] Installing dependencies...`);
-
-    // Step 1: Install without running postinstall scripts (avoids esbuild version conflicts)
-    console.log(`[build] Installing dependencies (--ignore-scripts)...`);
-    const install = await runCmd('npm', ['install', '--ignore-scripts'], { cwd: targetDir, env: cleanEnv });
-    if (install.code !== 0) {
-      console.error(`[build] npm install failed: ${install.output}`);
-      return { ok: false, output: install.output };
-    }
-
-    // Step 2: Re-run esbuild's install to fetch correct platform-specific binary
-    // Find all esbuild install.js files and run them individually
-    const { execSync } = await import('child_process');
-    try {
-      const esbuildDirs = execSync(
-        `find ${targetDir}/node_modules -name "install.js" -path "*/esbuild/*" -not -path "*/node_modules/*/node_modules/*/node_modules/*"`,
-        { encoding: 'utf8', env: cleanEnv }
-      ).trim().split('\n').filter(Boolean);
-
-      for (const installScript of esbuildDirs) {
-        const esbuildDir = path.dirname(installScript);
-        console.log(`[build] Running esbuild install in ${path.relative(targetDir, esbuildDir)}...`);
-        // Remove any cached/linked binary first
-        const binPath = path.join(esbuildDir, 'bin', 'esbuild');
-        try { fs.unlinkSync(binPath); } catch {}
-        await runCmd('node', ['install.js'], { cwd: esbuildDir, env: cleanEnv });
-      }
-    } catch (e) {
-      console.log(`[build] esbuild re-install: ${e.message || 'no esbuild found (OK)'}`);
-    }
-
-    // Build the site
-    console.log(`[build] Running build...`);
-    const build = await runCmd('npm', ['run', 'build'], { cwd: targetDir, env: cleanEnv });
-    if (build.code !== 0) {
-      console.error(`[build] Build failed: ${build.output}`);
-      return { ok: false, output: build.output };
-    }
-
-    // Detect output directory (common static site generators)
-    // Order matters - check more specific paths first
-    const possibleDirs = [
-      'dist',                    // Astro, Vite, most modern bundlers
-      'dist/client',             // Astro SSR
-      '.vercel/output/static',   // Vercel adapter
-      '.output/public',          // Nitro/Nuxt
-      'build',                   // Create React App, Gatsby
-      'out',                     // Next.js static export
-      '_site',                   // Jekyll, Eleventy
-      'public',                  // Hugo, some others (check last - might be source)
-    ];
-    let outputDir = null;
-    for (const dir of possibleDirs) {
-      const fullPath = path.join(targetDir, dir);
-      // Must have index.html to be considered a valid build output
-      if (fs.existsSync(fullPath) && fs.existsSync(path.join(fullPath, 'index.html'))) {
-        outputDir = fullPath;
-        console.log(`[build] Found output directory: ${dir}`);
-        break;
-      }
-    }
-    // Fallback: just check if directory exists without requiring index.html
-    if (!outputDir) {
-      for (const dir of possibleDirs) {
-        const fullPath = path.join(targetDir, dir);
-        if (fs.existsSync(fullPath) && fs.statSync(fullPath).isDirectory()) {
-          outputDir = fullPath;
-          console.log(`[build] Found output directory (no index.html): ${dir}`);
-          break;
-        }
-      }
-    }
-
-    if (outputDir && outputDir !== targetDir) {
-      // Move build output to be the root of targetDir (production optimization)
-      // First, move output to a temp location
-      const tmpDir = targetDir + '_built';
-      await safeRemoveDir(tmpDir);
-      fs.renameSync(outputDir, tmpDir);
-      // Remove the cloned source
-      await safeRemoveDir(targetDir);
-      // Move built output to target
-      fs.renameSync(tmpDir, targetDir);
-      console.log(`[build] Moved build output to ${targetDir}`);
-    }
-
-    console.log(`[build] Build complete: ${targetDir}`);
-    return { ok: true, output: `Built successfully from ${branch} branch` };
-  }
-
-  // No package.json - assume static site, already good
-  return { ok: true, output: `Cloned static site from ${branch} branch` };
-}
-
-// ── Dev server lifecycle ──────────────────────────────────────────────
-async function startDevServer() {
-  if (devServerProcess) return;
-  if (!fs.existsSync(path.join(DEV_DIR, 'package.json'))) {
-    console.log('[dev-server] No package.json in dev dir, skipping');
-    return;
-  }
-
-  console.log(`[dev-server] Starting on port ${DEV_SERVER_PORT}...`);
-
-  // Ensure local node_modules/.bin is on PATH so binaries like `astro` are found
-  const devBinPath = path.join(DEV_DIR, 'node_modules', '.bin');
-  const devEnv = {
-    ...process.env,
-    PATH: `${devBinPath}:${process.env.PATH}`,
-    PORT: String(DEV_SERVER_PORT),
-    HOST: '0.0.0.0',
-    NODE_ENV: 'development',
-  };
-
-  // Install deps if needed
-  if (!fs.existsSync(path.join(DEV_DIR, 'node_modules'))) {
-    console.log('[dev-server] Installing dependencies...');
-    await runCmd('npm', ['install'], { cwd: DEV_DIR, env: devEnv });
-  }
-
-  // Kill any stale dev servers on our port first
-  try {
-    const lsof = childProcess.execSync(`lsof -ti:${DEV_SERVER_PORT} 2>/dev/null || true`).toString().trim();
-    if (lsof) {
-      console.log(`[dev-server] Killing stale process on port ${DEV_SERVER_PORT}: ${lsof}`);
-      childProcess.execSync(`kill -9 ${lsof} 2>/dev/null || true`);
-      await new Promise(r => setTimeout(r, 500));
-    }
-  } catch {}
-
-  devServerProcess = childProcess.spawn('npm', ['run', 'dev', '--', '--port', String(DEV_SERVER_PORT), '--host', '0.0.0.0'], {
-    cwd: DEV_DIR,
-    env: devEnv,
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
-
-  devServerProcess.stdout.on('data', (d) => console.log('[dev-server]', d.toString().trim()));
-  devServerProcess.stderr.on('data', (d) => console.error('[dev-server]', d.toString().trim()));
-  devServerProcess.on('close', (code) => {
-    console.log('[dev-server] Process exited with code', code);
-    devServerProcess = null;
-  });
-
-  // Wait for it to be ready
-  for (let i = 0; i < 30; i++) {
-    await new Promise(r => setTimeout(r, 1000));
-    try {
-      const res = await fetch(`http://127.0.0.1:${DEV_SERVER_PORT}/`);
-      if (res.ok || res.status === 304) {
-        console.log('[dev-server] Ready');
-        return;
-      }
-    } catch {}
-  }
-  console.warn('[dev-server] Timed out waiting for dev server to start');
-}
-
-function stopDevServer() {
-  if (!devServerProcess) return;
-  console.log('[dev-server] Stopping...');
-  devServerProcess.kill('SIGTERM');
-  devServerProcess = null;
-}
-
-// ── Production SSR server lifecycle ───────────────────────────────────
-// Detects if production site is SSR (has dist/server/entry.mjs) vs static
-function isProdSSR() {
-  return fs.existsSync(path.join(PRODUCTION_DIR, 'dist', 'server', 'entry.mjs'));
-}
-
-async function startProdServer(retryCount = 0) {
-  if (prodServerProcess) return;
-  if (!isProdSSR()) {
-    console.log('[prod-server] Not an SSR site, skipping');
-    return;
-  }
-  
-  console.log(`[prod-server] Starting SSR server on port ${PROD_SERVER_PORT}... (attempt ${retryCount + 1})`);
-
-  // Kill any stale processes - try multiple methods since containers vary
-  try {
-    // Method 1: pkill by script name
-    childProcess.execSync(`pkill -f 'entry.mjs' 2>/dev/null || true`);
-    // Method 2: Try fuser if available
-    childProcess.execSync(`fuser -k ${PROD_SERVER_PORT}/tcp 2>/dev/null || true`);
-    await new Promise(r => setTimeout(r, 2000));
-  } catch {}
-
-  // Get client domain for SITE_URL
-  const clientDomain = getClientDomain();
-  const siteUrl = clientDomain ? `https://${clientDomain}` : `http://localhost:${PROD_SERVER_PORT}`;
-
-  // Start the Astro SSR server directly from dist/server/entry.mjs
-  // (Don't use start-server.js as it may run dev mode instead of production)
-  const startScript = 'dist/server/entry.mjs';
-
-  prodServerProcess = childProcess.spawn('node', [startScript], {
-    cwd: PRODUCTION_DIR,
-    env: {
-      ...process.env,
-      PORT: String(PROD_SERVER_PORT),
-      HOST: '0.0.0.0',
-      NODE_ENV: 'production',
-      SITE_URL: siteUrl,
-    },
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
-
-  prodServerProcess.stdout.on('data', (d) => console.log('[prod-server]', d.toString().trim()));
-  prodServerProcess.stderr.on('data', (d) => console.error('[prod-server]', d.toString().trim()));
-  prodServerProcess.on('close', (code) => {
-    console.log('[prod-server] Process exited with code', code);
-    prodServerProcess = null;
-  });
-
-  // Wait for it to be ready
-  for (let i = 0; i < 30; i++) {
-    await new Promise(r => setTimeout(r, 1000));
-    try {
-      const res = await fetch(`http://127.0.0.1:${PROD_SERVER_PORT}/`);
-      if (res.ok || res.status === 304 || res.status === 404) {
-        console.log('[prod-server] Ready');
-        return;
-      }
-    } catch {}
-  }
-  // If we timed out and have retries left, try again
-  if (retryCount < 2) {
-    console.warn('[prod-server] Failed to start, retrying in 5 seconds...');
-    prodServerProcess = null;
-    await new Promise(r => setTimeout(r, 5000));
-    return startProdServer(retryCount + 1);
-  }
-  console.warn('[prod-server] Timed out waiting for SSR server to start after retries');
-}
-
-function stopProdServer() {
-  if (!prodServerProcess) return;
-  console.log('[prod-server] Stopping...');
-  prodServerProcess.kill('SIGTERM');
-  prodServerProcess = null;
-}
-
-async function restartProdServer() {
-  stopProdServer();
-  await new Promise(r => setTimeout(r, 1000));
-  await startProdServer();
-}
-
-async function restartDevServer() {
-  stopDevServer();
-  await new Promise(r => setTimeout(r, 1000));
-  await startDevServer();
-}
-
-// Pull latest code for dev branch (used by webhook - no full rebuild needed)
-async function pullDevBranch() {
-  const githubConfigPath = path.join(STATE_DIR, 'github.json');
-  if (!fs.existsSync(githubConfigPath)) return { ok: false, output: 'No github config' };
-
-  const githubConfig = JSON.parse(fs.readFileSync(githubConfigPath, 'utf8'));
-  const token = getGitHubToken();
-  const repoUrl = `https://github.com/${githubConfig.repo}`;
-  const authUrl = token ? repoUrl.replace('https://', `https://x-access-token:${token}@`) : repoUrl;
-
-  // If DEV_DIR has a .git, just pull. Otherwise clone fresh.
-  if (fs.existsSync(path.join(DEV_DIR, '.git'))) {
-    console.log('[dev-server] Pulling latest changes...');
-    await runCmd('git', ['remote', 'set-url', 'origin', authUrl], { cwd: DEV_DIR });
-    const pull = await runCmd('git', ['pull', '--ff-only', 'origin', githubConfig.devBranch], { cwd: DEV_DIR });
-    if (pull.code !== 0) {
-      // Pull failed - do a hard reset
-      console.log('[dev-server] Pull failed, doing hard reset...');
-      await runCmd('git', ['fetch', 'origin', githubConfig.devBranch], { cwd: DEV_DIR });
-      await runCmd('git', ['reset', '--hard', `origin/${githubConfig.devBranch}`], { cwd: DEV_DIR });
-    }
-    // Reinstall deps if package.json changed
-    await runCmd('npm', ['install'], { cwd: DEV_DIR });
-    return { ok: true, output: 'Pulled and updated' };
-  } else {
-    // Fresh clone
-    console.log('[dev-server] Fresh clone for dev server...');
-    await safeRemoveDir(DEV_DIR);
-    fs.mkdirSync(DEV_DIR, { recursive: true });
-    const clone = await runCmd('git', ['clone', '--branch', githubConfig.devBranch, authUrl, DEV_DIR]);
-    if (clone.code !== 0) return { ok: false, output: clone.output };
-    await runCmd('npm', ['install'], { cwd: DEV_DIR });
-    return { ok: true, output: 'Cloned fresh' };
-  }
-}
-
-// ── Gerald Dashboard setup & lifecycle ────────────────────────────────
-async function setupDashboard(token) {
-  // Fall back to OAuth or saved GitHub token if none provided
-  if (!token) {
-    token = getGitHubToken();
-  }
-
-  const dashboardRepo = 'https://github.com/illumin8ca/gerald-dashboard';
-  const authUrl = token
-    ? dashboardRepo.replace('https://', `https://x-access-token:${token}@`)
-    : dashboardRepo;
-
-  // Clone if not present, otherwise pull latest
-  if (!fs.existsSync(path.join(DASHBOARD_DIR, 'package.json'))) {
-    console.log('[dashboard] Cloning Gerald Dashboard...');
-    await safeRemoveDir(DASHBOARD_DIR);
-    fs.mkdirSync(DASHBOARD_DIR, { recursive: true });
-    const clone = await runCmd('git', ['clone', '--depth', '1', authUrl, DASHBOARD_DIR]);
-    if (clone.code !== 0) {
-      console.error('[dashboard] Clone failed:', clone.output);
-      return { ok: false, output: clone.output };
-    }
-  } else {
-    // Pull latest changes
-    console.log('[dashboard] Updating Gerald Dashboard...');
-    // Update remote URL in case token changed
-    await runCmd('git', ['remote', 'set-url', 'origin', authUrl], { cwd: DASHBOARD_DIR });
-    const pull = await runCmd('git', ['pull', '--ff-only', 'origin', 'main'], { cwd: DASHBOARD_DIR });
-    if (pull.code !== 0) {
-      // If pull fails (diverged history from shallow clone), do a fresh clone
-      console.log('[dashboard] Pull failed, doing fresh clone...');
-      await safeRemoveDir(DASHBOARD_DIR);
-      fs.mkdirSync(DASHBOARD_DIR, { recursive: true });
-      const clone = await runCmd('git', ['clone', '--depth', '1', authUrl, DASHBOARD_DIR]);
-      if (clone.code !== 0) {
-        console.error('[dashboard] Fresh clone failed:', clone.output);
-        return { ok: false, output: clone.output };
-      }
-    } else {
-      console.log('[dashboard] Updated:', pull.output.split('\n')[0]);
-    }
-  }
-
-  // Install deps
-  console.log('[dashboard] Installing dependencies...');
-  const install = await runCmd('npm', ['install', '--production=false'], { cwd: DASHBOARD_DIR });
-  if (install.code !== 0) {
-    console.error('[dashboard] Install failed:', install.output);
-    return { ok: false, output: install.output };
-  }
-
-  // Build frontend
-  console.log('[dashboard] Building frontend...');
-  const build = await runCmd('npm', ['run', 'build'], { cwd: DASHBOARD_DIR });
-  if (build.code !== 0) {
-    console.error('[dashboard] Build failed:', build.output);
-    return { ok: false, output: build.output };
-  }
-
-  return { ok: true, output: 'Dashboard installed and built' };
-}
-
-// ── Gerald Workspace setup ────────────────────────────────────────────
-async function setupWorkspace(token) {
-  // Fall back to OAuth or saved GitHub token if none provided
-  if (!token) {
-    token = getGitHubToken();
-    console.log('[workspace] Token lookup result:', token ? 'found' : 'NOT FOUND');
-    if (!token) {
-      console.log('[workspace] Checked locations:');
-      console.log('  -', path.join(STATE_DIR, 'github-oauth.json'), fs.existsSync(path.join(STATE_DIR, 'github-oauth.json')));
-      console.log('  -', path.join(os.homedir(), '.openclaw', 'github-oauth.json'), fs.existsSync(path.join(os.homedir(), '.openclaw', 'github-oauth.json')));
-    }
-  }
-
-  // Hardcoded Gerald workspace repo (like dashboard repo)
-  const workspaceRepo = 'https://github.com/illumin8ca/gerald';
-
-  const authUrl = token
-    ? workspaceRepo.replace('https://', `https://x-access-token:${token}@`)
-    : workspaceRepo;
-
-  // Check if workspace already has a git repo
-  const hasGitRepo = fs.existsSync(path.join(WORKSPACE_DIR, '.git'));
-  
-  if (!hasGitRepo) {
-    console.log(`[workspace] Gerald workspace not found. Cloning from ${workspaceRepo}...`);
-    console.log(`[workspace] Target directory: ${WORKSPACE_DIR}`);
-    console.log(`[workspace] Token available: ${token ? 'YES' : 'NO (public repo clone will fail if private)'}`);
-    
-    // Ensure parent directory exists
-    fs.mkdirSync(path.dirname(WORKSPACE_DIR), { recursive: true });
-    
-    // Remove any partial/corrupted workspace directory
-    if (fs.existsSync(WORKSPACE_DIR)) {
-      console.log('[workspace] Removing incomplete workspace directory...');
-      await safeRemoveDir(WORKSPACE_DIR);
-    }
-    
-    // Clone directly into WORKSPACE_DIR (simpler than temp + move)
-    console.log('[workspace] Running git clone...');
-    const clone = await runCmd('git', ['clone', '--depth', '1', authUrl, WORKSPACE_DIR]);
-    
-    if (clone.code !== 0) {
-      console.error('[workspace] ❌ Clone failed:', clone.output);
-      console.error('[workspace] This means Gerald\'s memories (SOUL.md, skills, etc.) won\'t be available');
-      console.error('[workspace] To fix: Connect GitHub in the Dashboard UI to authenticate');
-      return { ok: false, output: clone.output };
-    }
-    
-    console.log('[workspace] ✅ Successfully cloned Gerald workspace with memories and skills');
-    
-    // Verify key files exist
-    const soulExists = fs.existsSync(path.join(WORKSPACE_DIR, 'SOUL.md'));
-    const memoryExists = fs.existsSync(path.join(WORKSPACE_DIR, 'memory'));
-    console.log(`[workspace] Verification: SOUL.md=${soulExists}, memory/=${memoryExists}`);
-    
-  } else {
-    // Pull latest changes
-    console.log('[workspace] Updating Gerald workspace...');
-    // Update remote URL in case token changed
-    await runCmd('git', ['remote', 'set-url', 'origin', authUrl], { cwd: WORKSPACE_DIR });
-    const pull = await runCmd('git', ['pull', '--ff-only', 'origin', 'main'], { cwd: WORKSPACE_DIR });
-    if (pull.code !== 0) {
-      console.log('[workspace] Pull failed (may have local changes):', pull.output.split('\n')[0]);
-      await runCmd('git', ['fetch', 'origin', 'main'], { cwd: WORKSPACE_DIR });
-      return { ok: true, output: 'Workspace fetch complete (pull failed, may have local changes)' };
-    } else {
-      console.log('[workspace] Updated:', pull.output.split('\n')[0]);
-    }
-  }
-
-  return { ok: true, output: 'Workspace ready' };
-}
-
-let dashboardProcess = null;
-
-async function startDashboard() {
-  if (dashboardProcess) return;
-
-  // Setup workspace (clone/pull Gerald repo with memories, skills, etc.)
-  console.log('[workspace] Setting up workspace...');
-  try {
-    const workspaceResult = await setupWorkspace();
-    if (!workspaceResult.ok) {
-      console.warn('[workspace] Setup failed:', workspaceResult.output);
-    } else {
-      console.log('[workspace] Setup complete:', workspaceResult.output);
-    }
-  } catch (err) {
-    console.warn('[workspace] Setup error:', err.message);
-  }
-
-  // Load shared secrets if master key is set
-  if (process.env.GERALD_MASTER_KEY) {
-    const loadSecretsScript = path.join(WORKSPACE_DIR, 'scripts', 'load-secrets.sh');
-    if (fs.existsSync(loadSecretsScript)) {
-      console.log('[secrets] Loading shared secrets...');
-      try {
-        const secretsResult = await runCmd('bash', [loadSecretsScript], {
-          env: { 
-            ...process.env, 
-            GERALD_MASTER_KEY: process.env.GERALD_MASTER_KEY, 
-            STATE_DIR: STATE_DIR 
-          }
-        });
-        if (secretsResult.code === 0) {
-          console.log('[secrets] ✅ Shared secrets loaded');
-        } else {
-          console.warn('[secrets] ⚠️  Failed to load secrets:', secretsResult.output);
-        }
-      } catch (err) {
-        console.warn('[secrets] Error loading secrets:', err.message);
-      }
-    } else {
-      console.log('[secrets] Script not found, skipping');
-    }
-  } else {
-    console.log('[secrets] GERALD_MASTER_KEY not set, skipping shared secrets');
-  }
-
-  // Always run setup (which pulls latest + rebuilds) before starting
-  // Use timeout to prevent blocking forever
-  console.log('[dashboard] Checking for updates...');
-  let result = { ok: false, output: 'Timeout' };
-  try {
-    const setupPromise = setupDashboard();
-    const timeoutPromise = new Promise((_, reject) => 
-      setTimeout(() => reject(new Error('Dashboard setup timeout (3 min)')), 180000)
-    );
-    result = await Promise.race([setupPromise, timeoutPromise]);
-  } catch (err) {
-    console.warn('[dashboard] Setup issue:', err.message);
-    result = { ok: false, output: err.message };
-  }
-  
-  if (!result.ok) {
-    // If setup/update failed but we have an existing install, try to start it anyway
-    if (fs.existsSync(path.join(DASHBOARD_DIR, 'package.json'))) {
-      console.log('[dashboard] Update failed, starting existing version:', result.output);
-    } else {
-      console.error('[dashboard] Setup failed, cannot start:', result.output);
-      return;
-    }
-  }
-
-  console.log('[dashboard] Starting on port ' + DASHBOARD_PORT);
-  // Generate a stable JWT secret for the dashboard (persist in state dir)
-  const jwtSecretPath = path.join(STATE_DIR, 'dashboard-jwt-secret');
-  let dashboardJwtSecret;
-  if (fs.existsSync(jwtSecretPath)) {
-    dashboardJwtSecret = fs.readFileSync(jwtSecretPath, 'utf8').trim();
-  } else {
-    dashboardJwtSecret = crypto.randomBytes(32).toString('hex');
-    fs.writeFileSync(jwtSecretPath, dashboardJwtSecret, { mode: 0o600 });
-    console.log('[dashboard] Generated new JWT secret');
-  }
-
-  // Read bot token from OpenClaw config for Dashboard's Telegram auth verification
-  let telegramBotToken = '';
-  try {
-    const cfg = JSON.parse(fs.readFileSync(configPath(), 'utf8'));
-    telegramBotToken = cfg?.channels?.telegram?.botToken || '';
-  } catch {}
-
-  dashboardProcess = childProcess.spawn('node', ['server/index.js'], {
-    cwd: DASHBOARD_DIR,
-    env: {
-      ...process.env,
-      PORT: String(DASHBOARD_PORT),
-      NODE_ENV: 'production',
-      OPENCLAW_GATEWAY_URL: GATEWAY_TARGET,
-      OPENCLAW_GATEWAY_TOKEN: OPENCLAW_GATEWAY_TOKEN,
-      INTERNAL_API_KEY: INTERNAL_API_KEY,
-      JWT_SECRET: process.env.JWT_SECRET || dashboardJwtSecret,
-      ALLOWED_TELEGRAM_IDS: process.env.ALLOWED_TELEGRAM_IDS || '511172388',
-      TELEGRAM_BOT_ID: process.env.TELEGRAM_BOT_ID || '',
-      TELEGRAM_BOT_TOKEN: telegramBotToken || process.env.TELEGRAM_BOT_TOKEN || '',
-      SENDGRID_API_KEY: process.env.SENDGRID_API_KEY || '',
-      SENDGRID_SENDER_EMAIL: process.env.SENDGRID_SENDER_EMAIL || '',
-      CLIENT_DOMAIN: process.env.CLIENT_DOMAIN || '',
-      ALLOWED_EMAILS: process.env.DEFAULT_ALLOWED_EMAILS || '',
-    },
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
-
-  dashboardProcess.stdout.on('data', (d) => console.log('[dashboard]', d.toString().trim()));
-  dashboardProcess.stderr.on('data', (d) => console.error('[dashboard]', d.toString().trim()));
-  dashboardProcess.on('close', (code) => {
-    console.log('[dashboard] Process exited with code', code);
-    dashboardProcess = null;
-  });
-
-  // Wait for it to be ready (try /api/health first, fall back to / for older versions)
-  for (let i = 0; i < 30; i++) {
-    await new Promise(r => setTimeout(r, 1000));
-    try {
-      const res = await fetch(`http://127.0.0.1:${DASHBOARD_PORT}/api/health`);
-      if (res.ok) {
-        console.log('[dashboard] Ready (health check)');
-        return;
-      }
-    } catch {}
-    // Fallback: any response from / means the server is up
-    try {
-      const res = await fetch(`http://127.0.0.1:${DASHBOARD_PORT}/`);
-      if (res.status < 500) {
-        console.log('[dashboard] Ready (root fallback)');
-        return;
-      }
-    } catch {}
-  }
-  console.error('[dashboard] Failed to start within 30s');
-}
-
-// ── GitHub OAuth Device Flow Endpoints ────────────────────────────────
-const GITHUB_CLIENT_ID = 'Ov23lihLeOlzBtN5di4E';
-const GITHUB_CLIENT_SECRET = 'c593ee8eaeae73a1dca655bad285e7a2ff657261';
-
-// Helper to get GitHub token (OAuth or manual)
-function getGitHubToken() {
-  // First check env var (admin deployments)
-  if (process.env.GITHUB_TOKEN) {
-    console.log('[github] Using GITHUB_TOKEN from environment variable');
-    return process.env.GITHUB_TOKEN;
-  }
-
-  // Check OAuth token in STATE_DIR (Railway template location)
-  const oauthPath = path.join(STATE_DIR, 'github-oauth.json');
-  if (fs.existsSync(oauthPath)) {
-    try {
-      const oauth = JSON.parse(fs.readFileSync(oauthPath, 'utf8'));
-      if (oauth.access_token) return oauth.access_token;
-    } catch {}
-  }
-
-  // Check Dashboard's OAuth token location (~/dashboard/.openclaw/github-oauth.json)
-  const dashboardOAuthPath = path.join(os.homedir(), '.openclaw', 'github-oauth.json');
-  if (fs.existsSync(dashboardOAuthPath)) {
-    try {
-      const oauth = JSON.parse(fs.readFileSync(dashboardOAuthPath, 'utf8'));
-      if (oauth.access_token) return oauth.access_token;
-    } catch {}
-  }
-
-  // Fall back to manual token
-  const configPath = path.join(STATE_DIR, 'github.json');
-  if (fs.existsSync(configPath)) {
-    try {
-      const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-      if (config.token) return config.token;
-    } catch {}
-  }
-
-  // Fall back to env var
-  return process.env.GITHUB_TOKEN?.trim() || '';
-}
 
 app.post('/setup/api/github/start-auth', requireSetupAuth, async (req, res) => {
   try {
@@ -3083,7 +1204,7 @@ app.post("/setup/api/run", requireSetupAuth, async (req, res) => {
   
   try {
     if (isConfigured()) {
-      await ensureGatewayRunning();
+      await ensureGatewayRunning(OPENCLAW_GATEWAY_TOKEN);
       return res.json({
         ok: true,
         output:
@@ -3096,7 +1217,7 @@ app.post("/setup/api/run", requireSetupAuth, async (req, res) => {
     perfLog('[setup] Directories created');
 
     const payload = req.body || {};
-    const onboardArgs = buildOnboardArgs(payload);
+    const onboardArgs = buildOnboardArgs(payload, OPENCLAW_GATEWAY_TOKEN);
 
     // DIAGNOSTIC: Log token we're passing to onboard
     console.log(`[onboard] ========== TOKEN DIAGNOSTIC START ==========`);
@@ -3723,7 +1844,7 @@ app.post("/setup/api/run", requireSetupAuth, async (req, res) => {
       // Apply changes immediately.
       console.log('[setup] Starting gateway after successful setup...');
       try {
-        await restartGateway();
+        await restartGateway(OPENCLAW_GATEWAY_TOKEN);
         console.log('[setup] ✓ Gateway started successfully');
         extra += '\n[gateway] ✓ Gateway started successfully\n';
       } catch (err) {
@@ -3822,12 +1943,12 @@ app.post("/setup/api/gateway/start", requireSetupAuth, async (req, res) => {
     if (!isConfigured()) {
       return res.status(400).json({ ok: false, error: 'Not configured. Run setup first.' });
     }
-    if (gatewayProc) {
+    if (getGatewayProc()) {
       return res.json({ ok: true, message: 'Gateway already running' });
     }
     
     console.log('[manual-gateway] Starting gateway...');
-    await ensureGatewayRunning();
+    await ensureGatewayRunning(OPENCLAW_GATEWAY_TOKEN);
     res.json({ ok: true, message: 'Gateway started successfully' });
   } catch (err) {
     console.error('[manual-gateway] Failed:', err);
@@ -3842,7 +1963,7 @@ app.post("/setup/api/gateway/restart", requireSetupAuth, async (req, res) => {
     }
     
     console.log('[manual-gateway] Restarting gateway...');
-    await restartGateway();
+    await restartGateway(OPENCLAW_GATEWAY_TOKEN);
     res.json({ ok: true, message: 'Gateway restarted successfully' });
   } catch (err) {
     console.error('[manual-gateway] Restart failed:', err);
@@ -3853,21 +1974,21 @@ app.post("/setup/api/gateway/restart", requireSetupAuth, async (req, res) => {
 app.get("/setup/api/gateway/status", requireSetupAuth, async (req, res) => {
   res.json({
     configured: isConfigured(),
-    running: !!gatewayProc,
-    starting: !!gatewayStarting,
-    processId: gatewayProc?.pid || null,
+    running: !!getGatewayProc(),
+    starting: isGatewayStarting(),
+    processId: getGatewayProc()?.pid || null,
   });
 });
 
 // Manual dashboard control endpoints
 app.post("/setup/api/dashboard/start", requireSetupAuth, async (req, res) => {
   try {
-    if (dashboardProcess) {
+    if (getDashboardProcess()) {
       return res.json({ ok: true, message: 'Dashboard already running' });
     }
     
     console.log('[manual-dashboard] Starting dashboard...');
-    await startDashboard();
+    await startDashboard(OPENCLAW_GATEWAY_TOKEN);
     res.json({ ok: true, message: 'Dashboard started successfully' });
   } catch (err) {
     console.error('[manual-dashboard] Failed:', err);
@@ -3877,9 +1998,9 @@ app.post("/setup/api/dashboard/start", requireSetupAuth, async (req, res) => {
 
 app.get("/setup/api/dashboard/status", requireSetupAuth, async (req, res) => {
   res.json({
-    running: !!dashboardProcess,
+    running: !!getDashboardProcess(),
     installed: fs.existsSync(path.join(DASHBOARD_DIR, 'package.json')),
-    processId: dashboardProcess?.pid || null,
+    processId: getDashboardProcess()?.pid || null,
   });
 });
 
@@ -3915,7 +2036,7 @@ app.post('/api/rebuild', requireSetupAuth, async (req, res) => {
     if (target === 'dev' || target === 'both') {
       const result = await pullDevBranch();
       output += `Dev (${githubConfig.devBranch}): ${result.output}\n`;
-      if (devServerProcess) {
+      if (getDevServerProcess()) {
         await restartDevServer();
         output += 'Dev server restarted.\n';
       } else {
@@ -3938,11 +2059,7 @@ app.post('/api/rebuild-dashboard', requireSetupAuth, async (req, res) => {
     await autoSaveDevChanges();
 
     // Kill existing dashboard
-    if (dashboardProcess) {
-      dashboardProcess.kill('SIGTERM');
-      dashboardProcess = null;
-      await sleep(1000);
-    }
+    await stopDashboard();
 
     // Remove existing installation to force fresh clone
     await safeRemoveDir(DASHBOARD_DIR);
@@ -3956,7 +2073,7 @@ app.post('/api/rebuild-dashboard', requireSetupAuth, async (req, res) => {
     }
 
     // Restart dashboard
-    await startDashboard();
+    await startDashboard(OPENCLAW_GATEWAY_TOKEN);
     res.json({ ok: true, output: result.output + '\nDashboard restarted.' });
   } catch (err) {
     console.error('[rebuild-dashboard]', err);
@@ -3988,15 +2105,15 @@ app.post('/api/config/workspace-repo', requireSetupAuth, async (req, res) => {
     }
 
     // Read existing config
-    const configPath = path.join(STATE_DIR, 'illumin8.json');
+    const cfgPath = path.join(STATE_DIR, 'illumin8.json');
     let config = {};
     try {
-      config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+      config = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
     } catch (e) {}
 
     // Update workspace repo
     config.workspaceRepo = repoUrl;
-    fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+    fs.writeFileSync(cfgPath, JSON.stringify(config, null, 2));
 
     res.json({ ok: true, message: `Workspace repo set to ${repoUrl}` });
   } catch (err) {
@@ -4008,10 +2125,10 @@ app.post('/api/config/workspace-repo', requireSetupAuth, async (req, res) => {
 // Get workspace repo config
 app.get('/api/config/workspace-repo', requireSetupAuth, (req, res) => {
   try {
-    const configPath = path.join(STATE_DIR, 'illumin8.json');
+    const cfgPath = path.join(STATE_DIR, 'illumin8.json');
     let config = {};
     try {
-      config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+      config = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
     } catch (e) {}
 
     res.json({ 
@@ -4090,7 +2207,7 @@ app.post('/api/webhook/github', express.json(), async (req, res) => {
       console.log(`[webhook] Updating dev server...`);
       const result = await pullDevBranch();
       // Restart dev server if it was running, or start it
-      if (devServerProcess) {
+      if (getDevServerProcess()) {
         await restartDevServer();
       } else {
         await startDevServer();
@@ -4511,7 +2628,7 @@ A: We're selective because transformation requires commitment. We only work with
 
       // For SSR sites, proxy to the production SSR server
       const isSSR = isProdSSR();
-      const hasProcess = !!prodServerProcess;
+      const hasProcess = !!getProdServerProcess();
       console.log(`[routing] Production request: isSSR=${isSSR}, hasProcess=${hasProcess}, target=${PROD_SERVER_TARGET}`);
       if (isSSR && hasProcess) {
         console.log(`[routing] Proxying to prod-server at ${PROD_SERVER_TARGET}`);
@@ -4535,7 +2652,7 @@ A: We're selective because transformation requires commitment. We only work with
       // Set X-Robots-Tag header on all dev subdomain responses
       res.set('X-Robots-Tag', 'noindex, nofollow');
 
-      if (devServerProcess) {
+      if (getDevServerProcess()) {
         req._proxyTarget = 'dev-server'; // skip gateway token injection, enable meta tag injection
         return proxy.web(req, res, { target: DEV_SERVER_TARGET });
       }
@@ -4557,7 +2674,7 @@ A: We're selective because transformation requires commitment. We only work with
       if (req.path.startsWith('/openclaw')) {
         // Proxy /openclaw paths to OpenClaw gateway (dashboard API calls)
         if (isConfigured()) {
-          try { await ensureGatewayRunning(); } catch (err) {
+          try { await ensureGatewayRunning(OPENCLAW_GATEWAY_TOKEN); } catch (err) {
             return res.status(503).type('text/plain').send(`Gateway not ready: ${String(err)}`);
           }
         }
@@ -4575,7 +2692,7 @@ A: We're selective because transformation requires commitment. We only work with
   // ── Existing proxy logic ─────────────────────────────────────────────
   if (isConfigured()) {
     try {
-      await ensureGatewayRunning();
+      await ensureGatewayRunning(OPENCLAW_GATEWAY_TOKEN);
     } catch (err) {
       return res
         .status(503)
@@ -4623,7 +2740,7 @@ const server = app.listen(PORT, () => {
   // Auto-start the gateway in background (don't block server startup)
   if (isConfigured()) {
     console.log(`[wrapper] auto-starting gateway in background...`);
-    ensureGatewayRunning()
+    ensureGatewayRunning(OPENCLAW_GATEWAY_TOKEN)
       .then(() => console.log(`[wrapper] ✓ gateway auto-started successfully`))
       .catch(err => console.error(`[wrapper] ✗ gateway auto-start failed: ${err.message}`));
   } else {
@@ -4631,7 +2748,7 @@ const server = app.listen(PORT, () => {
   }
 
   // Start dashboard if installed (background)
-  startDashboard()
+  startDashboard(OPENCLAW_GATEWAY_TOKEN)
     .then(() => console.log('[dashboard] ✓ auto-started'))
     .catch(err => console.error('[dashboard] ✗ auto-start failed:', err.message));
 
@@ -4695,7 +2812,7 @@ server.on("upgrade", async (req, socket, head) => {
   const wsHost = req.headers.host?.split(':')[0]?.toLowerCase();
 
   // Dev subdomain WebSocket → dev server (HMR)
-  if (clientDomain && wsHost === `dev.${clientDomain}` && devServerProcess) {
+  if (clientDomain && wsHost === `dev.${clientDomain}` && getDevServerProcess()) {
     console.log(`[ws-upgrade] Proxying WebSocket to dev server: ${req.url}`);
     proxy.ws(req, socket, head, { target: DEV_SERVER_TARGET });
     return;
@@ -4713,7 +2830,7 @@ server.on("upgrade", async (req, socket, head) => {
   if (wsUrl.pathname.startsWith('/openclaw') || wsUrl.pathname === '/') {
     // /openclaw paths OR root path → OpenClaw gateway WebSocket (chat, node connections, etc.)
     try {
-      await ensureGatewayRunning();
+      await ensureGatewayRunning(OPENCLAW_GATEWAY_TOKEN);
     } catch {
       socket.destroy();
       return;
@@ -4795,10 +2912,9 @@ app.post('/api/dashboard/gerald-update', async (req, res) => {
     await runCmd('npm', ['run', 'build'], { cwd: DASHBOARD_DIR });
 
     // Restart dashboard process
-    if (dashboardProcess) {
-      dashboardProcess.kill('SIGTERM');
-      await new Promise(r => setTimeout(r, 2000));
-      await startDashboard();
+    if (getDashboardProcess()) {
+      await stopDashboard();
+      await startDashboard(OPENCLAW_GATEWAY_TOKEN);
     }
 
     res.json({
@@ -4816,9 +2932,9 @@ app.post('/api/dashboard/gerald-update', async (req, res) => {
 app.get('/api/system/health', async (req, res) => {
   try {
     const status = {
-      gateway: gatewayProc ? 'running' : 'stopped',
-      dashboard: dashboardProcess ? 'running' : 'stopped',
-      devServer: devServerProcess ? 'running' : 'stopped',
+      gateway: getGatewayProc() ? 'running' : 'stopped',
+      dashboard: getDashboardProcess() ? 'running' : 'stopped',
+      devServer: getDevServerProcess() ? 'running' : 'stopped',
       timestamp: new Date().toISOString()
     };
     res.json(status);
@@ -4858,17 +2974,17 @@ app.get('/api/health/workouts/today', async (req, res) => {
 process.on("SIGTERM", () => {
   // Best-effort shutdown
   try {
-    if (gatewayProc) gatewayProc.kill("SIGTERM");
+    if (getGatewayProc()) getGatewayProc()?.kill("SIGTERM");
   } catch {
     // ignore
   }
   try {
-    if (dashboardProcess) dashboardProcess.kill("SIGTERM");
+    if (getDashboardProcess()) getDashboardProcess()?.kill("SIGTERM");
   } catch {
     // ignore
   }
   try {
-    if (devServerProcess) devServerProcess.kill("SIGTERM");
+    if (getDevServerProcess()) getDevServerProcess().kill("SIGTERM");
   } catch {
     // ignore
   }
