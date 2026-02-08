@@ -643,6 +643,55 @@ app.disable("x-powered-by");
 app.use(express.json({ limit: "1mb" }));
 app.use(cookieParser());
 
+// ── Auto-recovery: Detect and fix corrupted dev workspaces ────────────
+// This runs before Dashboard routes to ensure dev workspace is valid
+app.use(async (req, res, next) => {
+  // Only check on Dashboard API calls that might use the dev workspace
+  if (!req.path.startsWith('/api/site') && !req.path.startsWith('/api/rebuild')) {
+    return next();
+  }
+
+  const devGitDir = path.join(DEV_DIR, '.git');
+  const devPackageJson = path.join(DEV_DIR, 'package.json');
+
+  // Check if dev dir exists but is corrupted (no .git, or no package.json)
+  if (fs.existsSync(DEV_DIR) && (!fs.existsSync(devGitDir) || !fs.existsSync(devPackageJson))) {
+    console.log('[auto-recovery] Corrupted dev workspace detected:', {
+      devDir: DEV_DIR,
+      hasGit: fs.existsSync(devGitDir),
+      hasPackageJson: fs.existsSync(devPackageJson)
+    });
+
+    // Try to recover by re-cloning
+    const githubConfigPath = path.join(STATE_DIR, 'github.json');
+    if (fs.existsSync(githubConfigPath)) {
+      try {
+        const githubConfig = JSON.parse(fs.readFileSync(githubConfigPath, 'utf8'));
+        const token = getGitHubToken();
+        const repoUrl = `https://github.com/${githubConfig.repo}`;
+        const authUrl = token ? repoUrl.replace('https://', `https://x-access-token:${token}@`) : repoUrl;
+
+        console.log('[auto-recovery] Wiping corrupted dev workspace and re-cloning...');
+        await safeRemoveDir(DEV_DIR);
+        fs.mkdirSync(DEV_DIR, { recursive: true });
+
+        const clone = await runCmd('git', ['clone', '--branch', githubConfig.devBranch, authUrl, DEV_DIR]);
+        if (clone.code === 0) {
+          console.log('[auto-recovery] Dev workspace re-cloned successfully');
+          await runCmd('npm', ['install'], { cwd: DEV_DIR });
+          console.log('[auto-recovery] Dependencies installed');
+        } else {
+          console.error('[auto-recovery] Failed to re-clone:', clone.output);
+        }
+      } catch (err) {
+        console.error('[auto-recovery] Error during recovery:', err.message);
+      }
+    }
+  }
+
+  next();
+});
+
 // Minimal health endpoint for Railway.
 app.get("/setup/healthz", (_req, res) => {
   // Railway health check endpoint - MUST respond quickly
