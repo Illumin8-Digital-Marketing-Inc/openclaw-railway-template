@@ -639,6 +639,7 @@ function requireSetupAuth(req, res, next) {
 // requireAuth middleware removed - Dashboard handles its own authentication
 
 const app = express();
+app.set('trust proxy', 1);
 app.disable("x-powered-by");
 app.use(express.json({ limit: "1mb" }));
 app.use(cookieParser());
